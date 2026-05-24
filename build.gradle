@@ -1,0 +1,73 @@
+plugins {
+    // Apply the java-library plugin for API and implementation separation.
+    id 'java-library'
+    id 'eclipse'
+    id 'java'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+eclipse {
+    jdt {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_11
+        javaRuntimeName = "jdk"
+    }
+}
+
+version = '0.1.0'
+group = "cn.net.zhijian.quickjs"
+
+repositories {
+    // Use Maven Central for resolving dependencies.
+    mavenCentral()
+    gradlePluginPortal()
+}
+
+tasks.withType(JavaCompile) {  
+    options.encoding = "UTF-8"  
+}
+
+tasks.withType(Javadoc) {  
+    options.encoding = "UTF-8"  
+}
+
+dependencies {
+    // JUnit 5 BOM 统一版本，不兼容junit4
+    testImplementation(platform("org.junit:junit-bom:5.14.0"))
+    // JUnit 5 核心 API（含平台基础类）
+    testImplementation("org.junit.jupiter:junit-jupiter-api")
+    // 不加此依赖，eclipse中默认使用内置的junit，导致加载类失败
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // JUnit 5 运行时引擎
+    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
+}
+
+jar {
+    archiveBaseName = 'cn.net.zhijian.quickjs'
+    manifest {
+        attributes(
+            'Manifest-Version':"${version}",
+            'Built-By'       : System.properties['user.name'],
+            'Build-Timestamp': new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ").format(new Date()),
+            'Build-Revision' : "${version}",
+            'Created-By'     : "Gradle ${gradle.gradleVersion}",
+            'Build-Jdk'      : "${System.properties['java.version']} (${System.properties['java.vendor']} ${System.properties['java.vm.version']})",
+            'Build-OS'       : "${System.properties['os.name']} ${System.properties['os.arch']} ${System.properties['os.version']}"
+        )
+    }
+}
+
+test {
+    testLogging { //必须写在useJUnitPlatform前面
+        events "passed", "skipped", "failed", "standardOut", "standardError"
+        showStandardStreams = true
+        exceptionFormat = "full"
+    }
+    // Use JUnit Platform for unit tests.
+    useJUnitPlatform()
+
+}

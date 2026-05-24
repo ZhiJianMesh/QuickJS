@@ -5,7 +5,7 @@ Changes:
 2) Add NativeLibraryLoader;
 3) Add Logger support;
 4) Cross compile in Linux|Windows|Termux;
-5) Add unit tests.
+5) Add junit test cases.
 
 ## Feature
 - Java types are supported with JavaScript
@@ -35,7 +35,7 @@ context.destroy();
 ### Console Support
 ```Java
 context.setConsole(your console implementation.);
-DefaultConsole will be used if not set. DefaultConsole print infomation to logger if set.
+DefaultConsole will be used if not set. DefaultConsole print information to logger if set.
 ```
 
 ### Supported Types
@@ -175,7 +175,7 @@ context.setModuleLoader(new QuickJSContext.BytecodeModuleLoader() {
     }
 });
 
-// 3. use `evaluateModule` for module script
+// 3. use `evaluate` for module script, can't use `evaluateModule`
 Object msg = context.evaluate("import {name, age} from './a.js'; name + ':' + age"); //Jack:18
 ```
 

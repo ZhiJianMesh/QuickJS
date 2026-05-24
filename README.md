@@ -1,11 +1,13 @@
 # QuickJS For JVM
 QuickJS wrapper for JVM. Based on [HarlonWang's QuickJS](https://github.com/HarlonWang/quickjs-wrapper/tree/main)
-Changes:
+
+Enhancements:
 1) Replace QuickJS with QuickJS-NG;
-2) Add NativeLibraryLoader;
-3) Add Logger support;
-4) Cross compile in Linux|Windows|Termux;
-5) Add junit test cases.
+2) Correct some bugs.
+3) Add NativeLibraryLoader;
+4) Add Logger support;
+5) Cross compile in Linux|Windows|Termux;
+6) Add junit test cases;
 
 ## Feature
 - Java types are supported with JavaScript

@@ -12,6 +12,7 @@
 #    x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++
 # termux环境除git、make、cmake外，还需安装：
 #    clang clang++
+# 千万注意：行首缩进请用Tab键，而不是多个空格
 # ============================================================================
 
 # ----- 用户配置 -------------------------------------------------------------
@@ -23,7 +24,8 @@ PROJECT_ROOT        := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 NATIVE_SRC_DIR      := $(PROJECT_ROOT)/native
 QUICKJS_SRC_DIR     := $(NATIVE_SRC_DIR)/quickjs-ng
 JNI_WRAPPER_SRC_DIR := $(NATIVE_SRC_DIR)/wrapper
-RESOURCE_NATIVE_DIR := $(PROJECT_ROOT)/src/main/resources/native
+RESOURCE_DIR        := $(PROJECT_ROOT)/src/main/resources
+RESOURCE_NATIVE_DIR := $(RESOURCE_DIR)/native
 BUILD_DIR           := $(PROJECT_ROOT)/build
 
 # ----- 获取 quickjs-ng 源码 -------------------------------------------------
@@ -87,21 +89,65 @@ define build_platform
 	@echo ">>> 完成: $(RESOURCE_NATIVE_DIR)/$(2)/$(3)/quickjs-jni-wrapper$(7)"
 endef
 
+define build_android
+	@echo ">>> 使用 NDK 交叉编译 Android/aarch64 ..."
+	@mkdir -p $(PROJECT_ROOT)/build_android_aarch64
+
+	cd $(PROJECT_ROOT)/build_android_aarch64 && \
+	cmake $(QUICKJS_SRC_DIR) \
+		-DCMAKE_TOOLCHAIN_FILE=$(ANDROID_NDK_HOME)/build/cmake/android.toolchain.cmake \
+		-DANDROID_ABI=arm64-v8a \
+		-DANDROID_PLATFORM=android-21 \
+		-DANDROID_STL=c++_static \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DBUILD_SHARED_LIBS=ON \
+		-DQJS_BUILD_EXAMPLES=OFF \
+		-DCONFIG_DLOPEN=0 \
+		-DCONFIG_DL=0 \
+		-DJAVA_INCLUDE_PATH="$(JDK_HOME)/include" \
+		-DJAVA_INCLUDE_PATH2="$(JDK_HOME)/include/linux" \
+		-G "Unix Makefiles"
+	cd $(PROJECT_ROOT)/build_android_aarch64 && cmake --build . --target qjs
+	mkdir -p $(PROJECT_ROOT)/build_android_aarch64/jni_build
+	cd $(PROJECT_ROOT)/build_android_aarch64/jni_build && \
+	cmake $(PROJECT_ROOT) \
+		-DQUICKJS_SOURCE_DIR=$(QUICKJS_SRC_DIR) \
+		-DJNI_WRAPPER_SOURCE_DIR=$(JNI_WRAPPER_SRC_DIR) \
+		-DQUICKJS_LIBRARY_PATH="$(PROJECT_ROOT)/build_android_aarch64/libqjs.so" \
+		-DCMAKE_TOOLCHAIN_FILE=$(ANDROID_NDK_HOME)/build/cmake/android.toolchain.cmake \
+		-DANDROID_ABI=arm64-v8a \
+		-DANDROID_PLATFORM=android-21 \
+		-DANDROID_STL=c++_static \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DJAVA_INCLUDE_PATH="$(JDK_HOME)/include" \
+		-DJAVA_INCLUDE_PATH2="$(JDK_HOME)/include/linux" \
+		-G "Unix Makefiles"
+
+	cd $(PROJECT_ROOT)/build_android_aarch64/jni_build && cmake --build . --target quickjs-jni-wrapper
+	mkdir -p $(RESOURCE_DIR)/jniLibs/arm64-v8a
+	cp $(PROJECT_ROOT)/build_android_aarch64/jni_build/native/Android/aarch64/quickjs-jni-wrapper.so $(RESOURCE_DIR)/jniLibs/arm64-v8a/
+	@echo ">>> 完成: $(RESOURCE_DIR)/jniLibs/arm64-v8a/quickjs-jni-wrapper.so"
+endef
+
 # ============================================================================
 # 平台目标
 # ============================================================================
 
 # ----- Linux x86_64 (本地或交叉编译，使用系统 gcc) ----------------------------
 linux-x86_64: get-quickjs
-	$(call build_platform,build_linux_x86_64,Linux,x86_64,gcc,g++,linux,.so,"")
+	$(call build_platform,build_linux_x86_64,Linux,x86_64,gcc,g++,linux,.so,)
 
 # ----- Linux aarch64 (需要安装 gcc-aarch64-linux-gnu) -----------------------
 linux-aarch64: get-quickjs
-	$(call build_platform,build_linux_aarch64,Linux,aarch64,aarch64-linux-gnu-gcc,aarch64-linux-gnu-g++,linux,.so,"")
+	$(call build_platform,build_linux_aarch64,Linux,aarch64,aarch64-linux-gnu-gcc,aarch64-linux-gnu-g++,linux,.so,)
 
 # ----- Windows x86_64 (需要安装 gcc-mingw-w64-x86-64) -----------------------
 win-x86_64: get-quickjs
 	$(call build_platform,build_win_x86_64,Windows,x86_64,x86_64-w64-mingw32-gcc,x86_64-w64-mingw32-g++,win32,.dll,-DWIN32=ON)
+
+# ----- Android arm64 -----
+android-aarch64: get-quickjs
+	$(call build_android)
 
 # ----- Termux aarch64 (直接在 Termux 中编译，使用 clang) --------------------
 # 注意：系统名设为 Android，以便 CMake 正确识别（Termux 本质是 Android 环境）
@@ -126,7 +172,7 @@ jar:
 # ============================================================================
 # 构建所有默认平台 (可自定义)
 # ============================================================================
-all: linux-x86_64 linux-aarch64 win-x86_64
+all: linux-x86_64 linux-aarch64 win-x86_64 android-aarch64
 
 # ============================================================================
 # 清理
@@ -142,8 +188,9 @@ help:
 	@echo "可用构建目标:"
 	@echo "  linux-x86_64, linux-aarch64"
 	@echo "  win-x86_64"
+	@echo "  android-aarch64"
 	@echo "  termux-aarch64"
 	@echo "  all, jar, clean"
 
 .PHONY: all clean help jar get-quickjs \
-	linux-x86_64 linux-aarch64 win-x86_64 termux-aarch64
+	linux-x86_64 linux-aarch64 win-x86_64 android-aarch64 termux-aarch64

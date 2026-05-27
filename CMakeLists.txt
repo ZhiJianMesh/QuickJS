@@ -66,9 +66,7 @@ target_include_directories(quickjs PRIVATE ${QUICKJS_SOURCE_DIR})
 # ----------------------------------------------------------------------------
 # JNI 包装器 (C++)
 # ----------------------------------------------------------------------------
-file(GLOB JNI_WRAPPER_SOURCES
-    "${JNI_WRAPPER_SOURCE_DIR}/*.cpp"
-)
+file(GLOB JNI_WRAPPER_SOURCES "${JNI_WRAPPER_SOURCE_DIR}/*.cpp")
 if(NOT JNI_WRAPPER_SOURCES)
     message(FATAL_ERROR "No JNI wrapper source found in ${JNI_WRAPPER_SOURCE_DIR}")
 endif()
@@ -86,14 +84,20 @@ if(WIN32)
     # 解决 byte 歧义问题：禁用 std::byte
     target_compile_definitions(quickjs-jni-wrapper PRIVATE _HAS_STD_BYTE=0)
     set_target_properties(quickjs-jni-wrapper PROPERTIES LINK_FLAGS "-static-libgcc -static-libstdc++ -static")
-elseif(CMAKE_SYSTEM_NAME MATCHES "Android")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux-Android")
     # Termux / Android: 链接 C++ 共享库，不需要 m 和 dl (Bionic 内置)
     target_link_libraries(quickjs-jni-wrapper PRIVATE quickjs c++_shared)
     target_compile_definitions(quickjs-jni-wrapper PRIVATE __ANDROID__)
+    # 静默链接警告（不影响运行）
     target_link_options(quickjs-jni-wrapper PRIVATE -Wl,--as-needed -rtlib=compiler-rt)
-    target_link_options(quickjs-jni-wrapper PRIVATE -rtlib=compiler-rt)
-    # 关键：禁用 C++ 异常和 RTTI，通常能彻底消除 libgcc_s.so.1 依赖
-    target_compile_options(quickjs-jni-wrapper PRIVATE -fno-exceptions -fno-rtti -rtlib=compiler-rt)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    target_link_libraries(quickjs-jni-wrapper PRIVATE quickjs c++_static)
+    target_compile_definitions(quickjs-jni-wrapper PRIVATE __ANDROID__)
+    # 静默链接警告（不影响运行），以下三个选项可以大幅度减小Android环境SO的体积
+    # -Wl,--gc-sections          # 移除未使用代码
+    # -Wl,-s                     # 剥离符号表
+    # -Wl,--as-needed            # 移除未使用的库
+    target_link_options(quickjs-jni-wrapper PRIVATE -Wl,--as-needed -Wl,--gc-sections -Wl,-s -rtlib=compiler-rt)
 else()
     target_link_libraries(quickjs-jni-wrapper PRIVATE quickjs m dl)
 endif()

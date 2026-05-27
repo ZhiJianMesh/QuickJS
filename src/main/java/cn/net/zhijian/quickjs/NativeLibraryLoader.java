@@ -11,11 +11,12 @@ class NativeLibraryLoader {
         String resourcePath = String.format("native/%s/%s/%s", osName, archName, libName);
 
         try {
-            InputStream in = NativeLibraryLoader.class.getClassLoader().getResourceAsStream(resourcePath);
+            InputStream in = Thread.currentThread().getContextClassLoader().getResourceAsStream(resourcePath);
             if (in == null) {
                 QuickJSLogger.instance().warn("{} not exists, try to load {} from system", resourcePath, libName);
                 // 如果在JAR中找不到对应的资源，回退到系统库路径
-                System.loadLibrary(libName);
+                int idx = libName.lastIndexOf('.'); //不要末尾的.so
+                System.loadLibrary(libName.substring(0, idx));
                 return;
             }
 
@@ -42,14 +43,34 @@ class NativeLibraryLoader {
         return home != null && home.contains("/data/data/com.termux");
     }
     
+    private static boolean isAndroid() {
+        String s = System.getProperty("java.vendor");
+        // 注意: "Android" 和 "Dalvik/ART" 的大小写准确
+        if(s.contains("Android")) {
+            return true;
+        }
+        
+        s = System.getProperty("java.vm.name");
+        if("Dalvik".equals(s) || "ART".equals(s)) {
+            return true;
+        }
+        return false;
+    }
+    
     private static String osName() {
         String osName = System.getProperty("os.name");
         if (osName == null) return "unknown";
         if(isTermux()) {
             return "Linux-Android";
         }
+        if(isAndroid()) {
+            return "Android";
+        }
         String os = osName.toLowerCase();
-        if (os.startsWith("win")) return "Windows";
+        if (os.startsWith("win")) {
+            return "Windows";
+        }
+        
         return "Linux";
     }
 

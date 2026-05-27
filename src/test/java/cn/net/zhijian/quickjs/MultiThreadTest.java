@@ -21,6 +21,9 @@ public class MultiThreadTest {
         
         for(int i = 0; i < N; i++) {
             pool.execute(() -> {
+                //如果在线程池中使用，如果线程池是固定大小的，可以使用ThreadLocal保存ctx；
+                //如果线程池是变动的，空闲时会销毁线程，则建议使用一个池子管理ctx，避免线程销毁了，ctx没有close；
+                //本例因为在当前线程执行结束就释放，所以不涉及ctx缓存问题
                 try (QuickJSContext ctx =  QuickJSContext.create()){
                     Object r = ctx.evaluate("1 + 2;");
                     if(r.equals(3)) {

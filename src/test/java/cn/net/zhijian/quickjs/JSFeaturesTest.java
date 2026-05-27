@@ -66,7 +66,7 @@ public class JSFeaturesTest extends UnitTestBase {
     }
     
     @Test
-    void testArrayAndObjectOperations() {
+    public void testArrayAndObjectOperations() {
         Object length = getContext().evaluate("var arr = [1, 2, 3]; arr.push(4);arr.length");
         assertEquals(length, 4);
         Object name = getContext().evaluate("var obj = { name: 'test', version: 1 };obj.name");

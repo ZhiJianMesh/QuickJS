@@ -23,7 +23,7 @@ public class JavaFeaturesTest extends UnitTestBase {
     }
     
     @Test
-    void testMultipleContextIsolation() {
+    public void testMultipleContextIsolation() {
         QuickJSContext ctx2 = QuickJSContext.create();
         getContext().evaluate("var shared = 'context1';");
         ctx2.evaluate("var shared = 'context2';");
@@ -37,7 +37,7 @@ public class JavaFeaturesTest extends UnitTestBase {
     }
     
     @Test
-    void testJavaToJSPrimitiveConversion() {
+    public void testJavaToJSPrimitiveConversion() {
         getContext().getGlobalObject().setProperty("longNum", Long.MAX_VALUE);
         Object r = getContext().evaluate("typeof longNum");
         assertEquals(r, "bigint");
@@ -48,7 +48,7 @@ public class JavaFeaturesTest extends UnitTestBase {
     }
     
     @Test
-    void testJavaFunctionBinding() {
+    public void testJavaFunctionBinding() {
         getContext().getGlobalObject().setProperty("javaAdd", (JSCallFunction) args -> {
             int a = ((Number) args[0]).intValue();
             int b = ((Number) args[1]).intValue();
@@ -59,7 +59,7 @@ public class JavaFeaturesTest extends UnitTestBase {
     }
     
     @Test
-    void testJsFunctionBinding() {
+    public void testJsFunctionBinding() {
         getContext().evaluate("function test_aaa(a) {return 'aaa_'+a;}");
         JSFunction jf = getContext().getGlobalObject().getJSFunction("test_aaa");
         Object r = jf.call("test");
@@ -68,7 +68,7 @@ public class JavaFeaturesTest extends UnitTestBase {
     }
 
     @Test
-    void testJSArrayToJavaConversion() {
+    public void testJSArrayToJavaConversion() {
         Object arr = getContext().evaluate("[1, 'two', false]");
         assertTrue(arr instanceof JSArray);
         JSArray ja = (JSArray)arr;
@@ -78,14 +78,14 @@ public class JavaFeaturesTest extends UnitTestBase {
     }
 
     @Test
-    void testVariableSetAndGet() {
+    public void testVariableSetAndGet() {
         getContext().evaluate("var message = 'Hello, QuickJS!';");
         Object result = getContext().evaluate("message");
         assertEquals(result, "Hello, QuickJS!");
     }
 
     @Test
-    void testGlobalObjectProperty() {
+    public void testGlobalObjectProperty() {
         JSObject global = getContext().getGlobalObject();
         global.setProperty("global_a", 100);
         Object result = getContext().evaluate("global_a + 1");
@@ -107,7 +107,7 @@ public class JavaFeaturesTest extends UnitTestBase {
     }
     
     @Test
-    void testExcuteJavaClass() {
+    public void testExcuteJavaClass() {
         //getContext().setLogger(QuickJSContext.SystemConsole);
         JSObject global = getContext().getGlobalObject();
         
@@ -122,13 +122,13 @@ public class JavaFeaturesTest extends UnitTestBase {
     }
 
     @Test
-    void testEvaluateMathOpr() {
+    public void testEvaluateMathOpr() {
         Object result = getContext().evaluate("1 + 2 * 3");
         assertEquals(result, 7);
     }
     
     @Test
-    void testJavaScriptException() {
+    public void testJavaScriptException() {
         try {
             getContext().evaluate("abcd_ed+1");
             //assertTrue(ex instanceof RuntimeException);
@@ -179,7 +179,7 @@ public class JavaFeaturesTest extends UnitTestBase {
     }    
     
     @Test
-    void testReleaseJSObject() {
+    public void testReleaseJSObject() {
         Object obj = getContext().evaluate("({ name: 'temp' })");
         assertTrue(obj instanceof JSObject);
         

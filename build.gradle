@@ -6,19 +6,19 @@ plugins {
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
+    sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
 }
 
 eclipse {
     jdt {
-        sourceCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
         javaRuntimeName = "jdk"
     }
 }
 
-version = '0.1.0'
+version = '0.1.1'
 group = "cn.net.zhijian.quickjs"
 
 repositories {

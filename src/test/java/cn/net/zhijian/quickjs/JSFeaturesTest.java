@@ -300,4 +300,24 @@ public class JSFeaturesTest extends UnitTestBase {
             assertTrue(e.getMessage().indexOf("err1") >= 0);
         }
     }
+    
+    @Test
+    public void testEvaluateJsModule() {
+        Object o = getContext().evaluateModule(
+                "export var name = 'Jack';\n" +
+                "export var age = 18;\n" +
+                "export function report() { return name + ':' + age};", 
+                "a.js");
+
+        assertTrue(o instanceof JSObject);
+        JSObject module = (JSObject) o;
+        assertEquals("Jack", module.getProperty("name"));
+        assertEquals(18, ((Number)module.getProperty("age")).intValue());
+        JSFunction f = module.getJSFunction("report");
+        assertTrue(f != null);
+        String result = (String) f.call(); // 调用函数
+        f.release();
+        assertEquals(result, "Jack:18");
+        module.release();
+    }
 }

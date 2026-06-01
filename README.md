@@ -1,4 +1,4 @@
-# QuickJS For JVM
+# QuickJS For JVM&Android
 QuickJS wrapper for JVM. Based on [HarlonWang's QuickJS](https://github.com/HarlonWang/quickjs-wrapper/tree/main)
 
 Enhancements:
@@ -6,7 +6,7 @@ Enhancements:
 2) Correct some bugs.
 3) Add NativeLibraryLoader;
 4) Add Logger support;
-5) Cross compile in Linux|Windows|Termux;
+5) Cross compile in Linux|Windows|Termux|Android;
 6) Add junit test cases;
 
 ## Feature
@@ -32,12 +32,20 @@ QuickJSContext context = QuickJSContext.create();
 context.evaluate("1 + 2;");
 
 // destroy QuickJSContext
-context.destroy();
+context.close();
+```
+Or try-with-resource
+
+```Java
+try(QuickJSContext context = QuickJSContext.create()) {
+    // evaluating JavaScript
+    context.evaluate("1 + 2;");
+}
 ```
 
 ### Console Support
 ```Java
-context.setConsole(your console implementation.);
+context.setConsole(your console implementation);
 DefaultConsole will be used if not set. DefaultConsole print information to logger if set.
 ```
 
@@ -100,11 +108,11 @@ JavaScript
 
 ```JavaScript
 var repository = {
-	name: 'QuickJS Wrapper',
-	created: 2022,
-	version: 1.1,
-	signing_enabled: true,
-	getUrl: (name) => { return 'https://github.com/HarlonWang/quickjs-wrapper'; }
+    name: 'QuickJS Wrapper',
+    created: 2022,
+    version: 1.1,
+    signing_enabled: true,
+    getUrl: (name) => { return 'https://github.com/HarlonWang/quickjs-wrapper'; }
 }
 ```
 Java
@@ -158,33 +166,60 @@ context.execute(code);
 ### ESModule
 Java
 ```Java
-// 1. string code mode
+// 1. load with string code mode
+String js =  "export var name = 'Jack';\n"
+          + "export var age = 18;\n"
+          + "export function report() { return name + ':' + age};"
+
 context.setModuleLoader(new QuickJSContext.DefaultModuleLoader() {
     @Override
     public String getModuleStringCode(String moduleName) {
        if (moduleName.equals("a.js")) {
-           return "export var name = 'Jack';\n" +
-                   "export var age = 18;";
+           return js;
        }
        return null;
     }
 });
 
-// 2. bytecode mode
+// 2. load with bytecode mode
 context.setModuleLoader(new QuickJSContext.BytecodeModuleLoader() {
     @Override
     public byte[] getModuleBytecode(String moduleName) {
-        return context.compileModule("export var name = 'Jack';export var age = 18;", moduleName);
+        if (moduleName.equals("a.js")) {
+            return context.compileModule(js, moduleName);
+        }
+        return null;
     }
 });
 
-// 3. use `evaluate` for module script, can't use `evaluateModule`
-Object msg = context.evaluate("import {name, age} from './a.js'; name + ':' + age"); //Jack:18
+// 3. use module script with 'evaluate'
+Object msg = context.evaluate("import('a.js').then(m => m.name+':'+m.age)"); //Jack:18
+
+// 4. use module script with 'evaluateModule'
+Object o = context.evaluateModule("import {name, age, report} from 'a.js'; export {name, age, report}", "c.js");
+JSObject module = (JSObject)o;
+String name = (String) module.getProperty("name"); //Jack
+int age = (Integer)module.getInteger("age"); //18
+JSFunction f = module.getJSFunction("report");
+String result = (String) f.call(); //Jack:18
+//===be sure to release them after using===
+f.release();
+module.release();
+
+// 5. load module with 'evaluateModule' directly
+Object o = context.evaluateModule(
+        "export var name = 'Jack';\n" +
+        "export var age = 18;\n" +
+        "export function report() { return name + ':' + age};", 
+        "a.js");
+JSObject module = (JSObject) o;
+...
+
 ```
 
 
 ### Object release
-We typically recommend releasing reference relationships actively after using Java objects to avoid memory leaks. Additionally, the engine will release unreleased objects when destroy, but this timing may be a bit later.
+We typically recommend releasing reference relationships actively after using Java objects to avoid memory leaks. Additionally, the engine will release unreleased objects when destroy, but it may be a bit later.
 ```java
 JSFunction func = xxx.getJSFunction("test");
 func.call();
@@ -227,8 +262,7 @@ JavaScript runtimes are single threaded. All execution in the JavaScript runtime
 Support it by joining __[stargazers](https://github.com/HarlonWang/quickjs-wrapper/stargazers)__ for this repository. <br>
 
 ## Reference
-
+- [HarlonWang's QuickJS](https://github.com/HarlonWang/quickjs-wrapper/tree/main)
 - [quickjs-java](https://github.com/cashapp/quickjs-java)
 - [quack](https://github.com/koush/quack)
 - [quickjs-android](https://github.com/taoweiji/quickjs-android)
-- [HarlonWang's QuickJS](https://github.com/HarlonWang/quickjs-wrapper/tree/main)

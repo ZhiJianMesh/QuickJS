@@ -1,6 +1,7 @@
 package cn.net.zhijian.quickjs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -33,7 +34,7 @@ public class JavaFeaturesTest extends UnitTestBase {
         r = ctx2.evaluate("shared");
         assertEquals(r, "context2");
         
-        ctx2.destroy();
+        ctx2.close();
     }
     
     @Test
@@ -235,11 +236,36 @@ public class JavaFeaturesTest extends UnitTestBase {
         array.release();
     }
     
+    private void testMoudle(QuickJSContext ctx, String moduleName) {
+        Object o = ctx.evaluate("import('"+moduleName+"').then(m => m.name+'|'+m.age+';'+m.report())", "b.js");
+        assertEquals("Jack|18;Jack:18", o);
+        
+        byte[] byteCode = ctx.compile("import('"+moduleName+"').then(m => m.name+'|'+m.age+';'+m.report())", "b.js");
+        o = ctx.execute(byteCode);
+        assertEquals("Jack|18;Jack:18", o);
+        
+        o = ctx.evaluateModule("import {name, age, report} from '"+moduleName+"'; export {name, age, report}", "c.js");
+        assertTrue(o != null && o instanceof JSObject);
+        JSObject module = (JSObject)o;
+        String name = (String) module.getProperty("name");
+        assertNotNull(name);
+        assertEquals(name, "Jack");
+        int age = (Integer)module.getInteger("age");
+        assertEquals(age, 18);
+        JSFunction f = module.getJSFunction("report");
+        assertTrue(f != null);
+        String result = (String) f.call(); // 调用函数
+        f.release();
+        assertEquals(result, "Jack:18");
+        module.release();
+    }
+    
     @Test
-    public void testESModuleSupport() throws Exception {
+    public void testStringCodeModuleSupport() throws Exception {
         final String TEST_MODULE = "a.js";
-        getContext().setConsole(QuickJSContext.DefaultConsole);
-        getContext().setModuleLoader(new QuickJSContext.DefaultModuleLoader() {
+        QuickJSContext ctx = getContext();
+        ctx.setConsole(QuickJSContext.DefaultConsole);
+        ctx.setModuleLoader(new QuickJSContext.DefaultModuleLoader() {
             @Override
             public String getStringCode(String moduleName) {
                 if(moduleName.indexOf(TEST_MODULE) >= 0) {
@@ -250,7 +276,43 @@ public class JavaFeaturesTest extends UnitTestBase {
                 return null;
             }
         });
-        Object o = getContext().evaluate("import('a.js').then(m => m.name+'|'+m.age+';'+m.report())", "b.js");
-        assertEquals("Jack|18;Jack:18", o);
+        testMoudle(ctx, TEST_MODULE);
+    }
+    
+    @Test
+    public void testByteCodeModuleSupport() throws Exception {
+        final String TEST_MODULE = "a.js";
+        QuickJSContext ctx = getContext();
+        ctx.setConsole(QuickJSContext.DefaultConsole);
+        ctx.setModuleLoader(new QuickJSContext.BytecodeModuleLoader() {
+            @Override
+            public byte[] getBytecode(String moduleName) {
+                if(moduleName.indexOf(TEST_MODULE) >= 0) {
+                    return ctx.compileModule("export var name = 'Jack';\n"
+                           + "export var age = 18;"
+                           + "export function report() { return name + ':' + age};", moduleName);
+                }
+                return null;
+            }
+        });
+        testMoudle(ctx, TEST_MODULE);
+    }
+    
+    @Test
+    public void testParseJson() {
+        Object o = getContext().parse("{\"a\":1,\"b\":\"abc\",\"c\":{\"a\":1.0,\"b\":189}}");
+        assertTrue(o != null && o instanceof JSObject);
+        JSObject jo = (JSObject)o;
+        int a = jo.getInteger("a");
+        assertEquals(a, 1);
+        String b = jo.getString("b");
+        assertEquals(b, "abc");
+        JSObject subJo = jo.getJSObject("c");
+        double fa = subJo.getDouble("a");
+        assertEquals(fa, 1.0, 0.1);
+        int ib = subJo.getInteger("b");
+        assertEquals(ib, 189);
+        subJo.release();
+        jo.release();
     }
 }

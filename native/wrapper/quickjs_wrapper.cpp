@@ -146,8 +146,6 @@ static JSClassDef js_func_callback_class = {
         .finalizer = jsFuncCallbackFinalizer
 };
 
-
-
 static JSValue jsFnCallback(JSContext *ctx, JSValueConst this_obj, int argc, JSValueConst *argv, int magic, JSValue *func_data) {
     int callbackId = *((int *)JS_GetOpaque2(ctx, func_data[0], js_func_callback_class_id));
     auto wrapper = reinterpret_cast<QuickJSWrapper*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
@@ -177,16 +175,15 @@ static char *jsModuleNormalizeFunc(JSContext *ctx, const char *module_base_name,
     jmethodID normalizeName = env->GetMethodID(wrapper->moduleLoaderClass, "normalizeName", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
     jstring j_module_base_name = env->NewStringUTF(module_base_name);
     jstring j_module_name = env->NewStringUTF(module_name);
-    const char *norm_name; //必须在此定义，否则不能用goto
+    const char *norm_name; //must be defined before goto, otherwise can't use goto
     char *ret = nullptr;
-    auto result = env->CallObjectMethod(moduleLoader, normalizeName, j_module_base_name, j_module_name);
+    jobject result = env->CallObjectMethod(moduleLoader, normalizeName, j_module_base_name, j_module_name);
     if (result == nullptr) {
         throwJSException(env, "Failed to load module, cause moduleName was null!");
         goto END_NORMALIZE;
     }
     norm_name = env->GetStringUTFChars((jstring) result, nullptr);
-    // 重要：必须分配 QuickJS 可以释放的内存
-    ret = js_strdup(ctx, norm_name);  // 使用 QuickJS 的 js_strdup
+    ret = js_strdup(ctx, norm_name);  // 使用QuickJS的js_strdup，分配QuickJS可以释放的内存
     env->ReleaseStringUTFChars((jstring) result, norm_name);
     env->DeleteLocalRef(result);
 
@@ -214,27 +211,25 @@ static JSModuleDef *jsModuleLoaderFunc(JSContext *ctx, const char *module_name, 
     JSModuleDef *m = nullptr;
     if (isBytecodeModule) {
         jmethodID getBytecode = env->GetMethodID(wrapper->moduleLoaderClass, "getBytecode", "(Ljava/lang/String;)[B");
-        auto bytecode = (jbyteArray) env->CallObjectMethod(moduleLoader, getBytecode, utf8Name);
+        jbyteArray bytecode = (jbyteArray) env->CallObjectMethod(moduleLoader, getBytecode, utf8Name);
         if (bytecode == nullptr) {
             throwJSException(env, "Failed to load module, cause bytecode is null!");
-            goto END_LOADER;//不要嫌弃goto，实现唯一出口释放资源
+            goto END_LOADER;//use goto to achieve a single exit point, release resources there
         }
 
-        const auto buffer = env->GetByteArrayElements(bytecode, nullptr);
-        const auto bufferLength = env->GetArrayLength(bytecode);
-        auto obj = JS_ReadObject(ctx, reinterpret_cast<const uint8_t*>(buffer), bufferLength, JS_READ_OBJ_BYTECODE | JS_READ_OBJ_REFERENCE);
+        jbyte* buffer = env->GetByteArrayElements(bytecode, nullptr);
+        jsize bufferLength = env->GetArrayLength(bytecode);
+        JSValue obj = JS_ReadObject(ctx, reinterpret_cast<const uint8_t*>(buffer), bufferLength, JS_READ_OBJ_BYTECODE | JS_READ_OBJ_REFERENCE);
         env->ReleaseByteArrayElements(bytecode, buffer, JNI_ABORT);
         env->DeleteLocalRef(bytecode);
 
         if (JS_IsException(obj)) {
-            JS_FreeValue(ctx, obj);
-			throwJSException(env, ctx);// 此时 obj 是异常，需要获取异常信息并转换为 JS 异常
+			throwJSException(env, ctx);// convert js exception to java exception
 			m = (JSModuleDef *) JS_VALUE_GET_PTR(JS_EXCEPTION);
             goto END_LOADER;
         }
 
         if (JS_ResolveModule(ctx, obj)) {
-            JS_FreeValue(ctx, obj);
             throwJSException(env, "Failed to resolve JS module");
             goto END_LOADER;
         }
@@ -251,20 +246,19 @@ static JSModuleDef *jsModuleLoaderFunc(JSContext *ctx, const char *module_name, 
         //JS_FreeValue(ctx, obj); 
     } else {
         jmethodID getStringCode = env->GetMethodID(wrapper->moduleLoaderClass, "getStringCode", "(Ljava/lang/String;)Ljava/lang/String;");
-        auto result = env->CallObjectMethod(moduleLoader, getStringCode, utf8Name);
+        jobject result = env->CallObjectMethod(moduleLoader, getStringCode, utf8Name);
         if (result == nullptr) {
             throwJSException(env, "Failed to load module, cause string code was null!");
             goto END_LOADER;
         }
         
-        const auto script = env->GetStringUTFChars((jstring) result, JNI_FALSE);
+        const char* script = env->GetStringUTFChars((jstring) result, JNI_FALSE);
         int scriptLen = env->GetStringUTFLength((jstring) result);
         JSValue func_val = JS_Eval(ctx, script, scriptLen, module_name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
         env->ReleaseStringUTFChars((jstring) result, script);
         env->DeleteLocalRef(result);
 
         if (JS_IsException(func_val)) {
-            JS_FreeValue(ctx, func_val);
 			throwJSException(env, ctx);// 获取异常信息
 			m = (JSModuleDef *) JS_VALUE_GET_PTR(JS_EXCEPTION);
             goto END_LOADER;
@@ -501,7 +495,6 @@ jobject QuickJSWrapper::toJavaObject(JNIEnv *env, jobject thiz, JSValueConst thi
     return result;
 }
 
-
 jobject QuickJSWrapper::evaluate(JNIEnv *env, jobject thiz, jstring script, jstring file_name) {
     const char *c_script = env->GetStringUTFChars(script, JNI_FALSE);
     const char *c_file_name = env->GetStringUTFChars(file_name, JNI_FALSE);
@@ -522,8 +515,11 @@ jobject QuickJSWrapper::evaluate(JNIEnv *env, jobject thiz, jstring script, jstr
 
         WAIT_PROMISE(context, result);
     }
+    JSValue global = JS_GetGlobalObject(context);
+    jobject jObj = toJavaObject(env, thiz, global, result);
+    JS_FreeValue(context, global);
 
-    return toJavaObject(env, thiz, JS_UNDEFINED, result); //转换完成后会释放result
+    return jObj;
 }
 
 jobject QuickJSWrapper::getGlobalObject(JNIEnv *env, jobject thiz) const {
@@ -580,7 +576,6 @@ jobject QuickJSWrapper::call(JNIEnv *env, jobject thiz, jlong func, jlong this_o
 
     JSValue ret = JS_Call(context, jsFunc, jsObj, arguments.size(), arguments.data());
     if (JS_IsException(ret)) {
-        JS_FreeValue(context, ret);
         throwJSException(env, context);
         return nullptr;
     }
@@ -645,7 +640,6 @@ void QuickJSWrapper::set(JNIEnv *env, jobject thiz, jlong this_obj, jobject valu
     } else {
         JS_SetPropertyUint32(context, jsObj, index, JS_DupValue(context, child));
     }
-
 }
 
 void
@@ -681,12 +675,12 @@ JSValue QuickJSWrapper::jsFuncCall(int callback_id, JSValueConst this_val, int a
 
     for (int i = 0; i < argc; i++) {
         JSValue v = JS_DupValue(context, argv[i]);
-        auto java_arg = toJavaObject(jniEnv, jniThiz, this_val, v);
+        jobject java_arg = toJavaObject(jniEnv, jniThiz, this_val, v);
         jniEnv->SetObjectArrayElement(javaArgs, (jsize)i, java_arg);
         jniEnv->DeleteLocalRef(java_arg);
     }
 
-    auto result = jniEnv->CallObjectMethod(jniThiz, callFunctionBackM, callback_id, javaArgs);
+    jobject result = jniEnv->CallObjectMethod(jniThiz, callFunctionBackM, callback_id, javaArgs);
 
     jniEnv->DeleteLocalRef(javaArgs);
 
@@ -779,16 +773,13 @@ void QuickJSWrapper::freeDupValue(jlong value) const {
 
 jobject QuickJSWrapper::parseJSON(JNIEnv *env, jobject thiz, jstring json) {
     const char *c_json = env->GetStringUTFChars(json, JNI_FALSE);
-    auto jsonObj = JS_ParseJSON(context, c_json, strlen(c_json), "parseJSON.js");
+    JSValue jsonObj = JS_ParseJSON(context, c_json, strlen(c_json), "parseJSON.js");
+    env->ReleaseStringUTFChars(json, c_json);
     if (JS_IsException(jsonObj)) {
         throwJSException(env, context);
-        return nullptr;
+		return nullptr;
     }
-
-    JSValue jsObj = JS_UNDEFINED;
-    jobject result = toJavaObject(env, thiz, jsObj, jsonObj);
-    env->ReleaseStringUTFChars(json, c_json);
-    return result;
+    return toJavaObject(env, thiz, JS_UNDEFINED, jsonObj);
 }
 
 jbyteArray QuickJSWrapper::compile(JNIEnv *env, jstring source, jstring file_name, jboolean isModule) const {
@@ -855,45 +846,61 @@ jobject QuickJSWrapper::execute(JNIEnv *env, jobject thiz, jbyteArray bytecode) 
         WAIT_PROMISE(context, val);
     }
 
-    jobject result;
-    if (!JS_IsException(val)) {
-        result = toJavaObject(env, thiz, JS_UNDEFINED, val);
-    } else {
-        result = nullptr;
+    if (JS_IsException(val)) {
         throwJSException(env, context);
+		return nullptr;
     }
 
-    return result;
+    return toJavaObject(env, thiz, JS_UNDEFINED, val);
 }
 
 jobject QuickJSWrapper::evaluateModule(JNIEnv *env, jobject thiz, jstring script, jstring file_name) {
     const char *c_script = env->GetStringUTFChars(script, JNI_FALSE);
     const char *c_file_name = env->GetStringUTFChars(file_name, JNI_FALSE);
 
-    // 1. 编译模块，返回模块初始化函数
-    JSValue result = JS_Eval(context, c_script, strlen(c_script), c_file_name, JS_EVAL_TYPE_MODULE);
+    // 1. 编译模块，返回的是 JSModuleDef 包装对象（tag = module）
+    JSValue module = JS_Eval(context, c_script, strlen(c_script), c_file_name,
+         JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
     env->ReleaseStringUTFChars(script, c_script);
     env->ReleaseStringUTFChars(file_name, c_file_name);
+
+    if (JS_IsException(module)) {
+        throwJSException(env, context);
+        return nullptr;
+    }
+
+    // 关键：立即保存 JSModuleDef* 指针
+    // JS_Eval返回的tag是JS_TAG_MODULE，JS_VALUE_GET_PTR直接取到JSModuleDef*
+    JSModuleDef *m = (JSModuleDef *)JS_VALUE_GET_PTR(module);
+
+    // 2. 执行模块（module 变量会被释放，但m指针仍有效，由JSContext持有）
+    JSValue result = JS_EvalFunction(context, module);
+    //JS_FreeValue(context, module); //不可释放
     if (JS_IsException(result)) {
         throwJSException(env, context);
         return nullptr;
     }
-    
-    // a module evaluation returns a promise
-    // 3. 处理可能产生的 Promise jobs（如果有顶层 await）
-    if(JS_IsPromise(result)) {
+
+    // 3. 处理 Promise（顶层 await）
+    if (JS_IsPromise(result)) {
         if (!executePendingJobLoop(env, runtime, context)) {
             JS_FreeValue(context, result);
             return nullptr;
         }
-        WAIT_PROMISE(context, result);
     }
+    JS_FreeValue(context, result);  // Promise 对象用完即释放，非 Promise 也释放
 
-    // 4. 将结果转换为 Java 对象（例如模块的命名空间对象或导出值）
+    // 4. 统一用编译阶段保存的 m 获取模块命名空间
+    JSValue module_ns = JS_GetModuleNamespace(context, m);
+    if (JS_IsException(module_ns)) {
+        throwJSException(env, context);
+        return nullptr;
+    }
+    // 5. 转 Java 对象
     JSValue global = JS_GetGlobalObject(context);
-    jobject jsObj = toJavaObject(env, thiz, global, result);
+    jobject jsObj = toJavaObject(env, thiz, global, module_ns);
     JS_FreeValue(context, global);
-    JS_FreeValue(context, result);
+    
     return jsObj;
 }
 
@@ -907,8 +914,7 @@ jobject QuickJSWrapper::getOwnPropertyNames(JNIEnv *env, jobject thiz, jlong obj
     JSValue ret = JS_Call(context, ownPropertyNames, JS_NULL, 1, &jsObject);
     if (JS_IsException(ret)) {
         throwJSException(env, context);
-        JS_FreeValue(context, ret);
-        return nullptr;
+		return nullptr;
     }
 
     return toJavaObject(env, thiz, JS_UNDEFINED, ret);
@@ -920,8 +926,6 @@ jstring QuickJSWrapper::toJavaString(JNIEnv *env, JSValue value) const {
     const char* string = JS_ToCString(context, value);
     result = env->NewStringUTF(string);
     JS_FreeCString(context, string);
-    // JSString 类型的 JSValue 需要手动释放掉，不然会泄漏
-    JS_FreeValue(context, value);
 #else
     // 这里需要注意，JVM 平台下 NewStringUTF 方法对部分 unicode 的转换有问题，会出现乱码，换了另一种方式解决。
     const char *str;
@@ -937,9 +941,9 @@ jstring QuickJSWrapper::toJavaString(JNIEnv *env, JSValue value) const {
 
     JS_FreeCString(context, str);
     env->DeleteLocalRef(jba);
+#endif
     // JSString 类型的 JSValue 需要手动释放掉，不然会泄漏
     JS_FreeValue(context, value);
-#endif
 
     return result;
 }

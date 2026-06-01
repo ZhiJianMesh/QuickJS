@@ -11,11 +11,22 @@ class NativeLibraryLoader {
         String resourcePath = String.format("native/%s/%s/%s", osName, archName, libName);
 
         try {
+            if(isAndroid()) { 
+                //安卓的原生库需要放在jniLibs下，打包成aar后，默认从`jni/架构名/`目录中加载
+                //同样的loadLibrary(name)，windows中加载name.dll
+                //linux/android加载libname.so，macOS加载libname.dylib
+                //所以，在不同系统中，使用独立的动态库，要注意名称
+                QuickJSLogger.instance().info("load {} from system", libName);
+                int idx = libName.lastIndexOf('.'); //不要末尾的.so
+                System.loadLibrary(libName.substring(0, idx));
+                return;
+            }
+            
             InputStream in = Thread.currentThread().getContextClassLoader().getResourceAsStream(resourcePath);
             if (in == null) {
                 QuickJSLogger.instance().warn("{} not exists, try to load {} from system", resourcePath, libName);
                 // 如果在JAR中找不到对应的资源，回退到系统库路径
-                int idx = libName.lastIndexOf('.'); //不要末尾的.so
+                int idx = libName.lastIndexOf('.');
                 System.loadLibrary(libName.substring(0, idx));
                 return;
             }

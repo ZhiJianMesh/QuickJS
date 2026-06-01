@@ -1,13 +1,12 @@
 package cn.net.zhijian.quickjs;
 
-import java.io.Closeable;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 
-public class QuickJSContext implements Closeable {
+public class QuickJSContext implements AutoCloseable {
     public interface Console {
         void debug(String info);
         void info(String info);
@@ -18,12 +17,6 @@ public class QuickJSContext implements Closeable {
     static {
         // 静态加载方法，在类被引用时自动触发，确保原生库被加载
         NativeLibraryLoader.load();
-    }
-
-    @Override
-    public void close() throws QuickJSException {
-        QuickJSLogger.instance().debug("Close JS context");
-        destroy();
     }
 
     public static Console DefaultConsole = new Console() { //默认打印到logger中
@@ -319,7 +312,9 @@ public class QuickJSContext implements Closeable {
         this.leakDetectionListener = leakDetectionListener;
     }
 
-    public void destroy() {
+    @Override
+    public void close() {
+        QuickJSLogger.instance().debug("Close JS context");
         checkSameThread();
         checkDestroyed();
 
@@ -328,6 +323,10 @@ public class QuickJSContext implements Closeable {
         objectRecords.clear();
         destroyContext(context);
         destroyed = true;
+    }
+    
+    public boolean closed() {
+        return destroyed;
     }
 
     public void releaseObjectRecords(boolean needRelease) {

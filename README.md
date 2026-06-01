@@ -1,13 +1,15 @@
 # QuickJS For JVM&Android
-QuickJS wrapper for JVM. Based on [HarlonWang's QuickJS](https://github.com/HarlonWang/quickjs-wrapper/tree/main)
+QuickJS wrapper for JVM & Android. 
+It based on [HarlonWang's QuickJS](https://github.com/HarlonWang/quickjs-wrapper/tree/main).
 
 Enhancements:
 1) Replace QuickJS with QuickJS-NG;
 2) Correct some bugs.
 3) Add NativeLibraryLoader;
 4) Add Logger support;
-5) Cross compile in Linux|Windows|Termux|Android;
-6) Add junit test cases;
+5) Support ESMoudle;
+6) Cross compile in Linux|Windows|Termux|Android;
+7) Add junit test cases;
 
 ## Feature
 - Java types are supported with JavaScript
@@ -259,7 +261,7 @@ ProGuard users must manually add the options from [consumer-rules.pro](/wrapper-
 JavaScript runtimes are single threaded. All execution in the JavaScript runtime is guaranteed thread safe, by way of Java synchronization.
 
 ## Find this repository useful?
-Support it by joining __[stargazers](https://github.com/HarlonWang/quickjs-wrapper/stargazers)__ for this repository. <br>
+Support it by joining __[stargazers](https://github.com/ZhiJianMesh/QuickJS/stargazers)__ for this repository. <br>
 
 ## Reference
 - [HarlonWang's QuickJS](https://github.com/HarlonWang/quickjs-wrapper/tree/main)

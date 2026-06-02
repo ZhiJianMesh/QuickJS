@@ -1,8 +1,8 @@
 # QuickJS For JVM&Android
 QuickJS wrapper for JVM & Android. 
-It based on [HarlonWang's QuickJS](https://github.com/HarlonWang/quickjs-wrapper/tree/main).
+It is based on [HarlonWang's QuickJS](https://github.com/HarlonWang/quickjs-wrapper/tree/main).
 
-Enhancements:
+## Enhancements:
 1) Replace QuickJS with QuickJS-NG;
 2) Correct some bugs.
 3) Add NativeLibraryLoader;
@@ -11,7 +11,7 @@ Enhancements:
 6) Cross compile in Linux|Windows|Termux|Android;
 7) Add junit test cases;
 
-## Feature
+## Features:
 - Java types are supported with JavaScript
 - Support promise execute
 - JavaScript exception handler
@@ -89,7 +89,7 @@ obj1.setProperty("created", 2022);
 obj1.setProperty("version", 1.1);
 obj1.setProperty("signing_enabled", true);
 obj1.setProperty("getUrl", (JSCallFunction) args -> {
-    return "https://github.com/HarlonWang/quickjs-wrapper";
+    return "https://github.com/ZhiJianMesh/QuickJS";
 });
 globalObj.setProperty("repository", repository);
 repository.release();
@@ -102,7 +102,7 @@ repository.name; // QuickJS Wrapper
 repository.created; // 2022
 repository.version; // 1.1
 repository.signing_enabled; // true
-repository.getUrl(); // https://github.com/HarlonWang/quickjs-wrapper
+repository.getUrl(); // https://github.com/ZhiJianMesh/QuickJS
 ```                
 
 ### Get Property
@@ -114,7 +114,7 @@ var repository = {
     created: 2022,
     version: 1.1,
     signing_enabled: true,
-    getUrl: (name) => { return 'https://github.com/HarlonWang/quickjs-wrapper'; }
+    getUrl: (name) => { return 'https://github.com/ZhiJianMesh/QuickJS'; }
 }
 ```
 Java
@@ -128,7 +128,7 @@ repository.getInteger("created"); // 2022
 repository.getDouble("version"); // 1.1
 repository.getBoolean("signing_enabled"); // true
 JSFunction fn = repository.getJSFunction("getUrl");
-String url = fn.call(); // https://github.com/HarlonWang/quickjs-wrapper
+String url = fn.call(); // https://github.com/ZhiJianMesh/QuickJS
 fn.release();
 repository.release();
 ```
@@ -239,7 +239,7 @@ ret.release();
 jsFunction.callVoid(xxx);
 ```
 
-It's important to note that if the result is being returned for use in JavaScript, there is no need to release it.
+It's important that if the result is being used in JavaScript, needn't release.
 ```java
 context.getGlobalObject().setProperty("test", new JSCallFunction() {
   @Override
@@ -255,10 +255,13 @@ context.getGlobalObject().setProperty("test", new JSCallFunction() {
 ## R8 / ProGuard
 If you are using R8 the shrinking and obfuscation rules are included automatically.
 
-ProGuard users must manually add the options from [consumer-rules.pro](/wrapper-android/consumer-rules.pro).
+ProGuard users must manually add the options from [consumer-rules.pro](/consumer-rules.pro).
 
 ## Concurrency
-JavaScript runtimes are single threaded. All execution in the JavaScript runtime is guaranteed thread safe, by way of Java synchronization.
+JavaScript runtime context must be used in a single thread at the same time.
+All execution in JavaScript runtime is guaranteed thread safe. 
+You should isolate contexts within different threads.
+For example save contexts in a resource pool. When any thread need to use, just apply from the pool. 
 
 ## Find this repository useful?
 Support it by joining __[stargazers](https://github.com/ZhiJianMesh/QuickJS/stargazers)__ for this repository. <br>

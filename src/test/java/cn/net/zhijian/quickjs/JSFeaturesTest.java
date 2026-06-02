@@ -249,6 +249,7 @@ public class JSFeaturesTest extends UnitTestBase {
         assertTrue(o != null && o instanceof QuickJSObject);
         QuickJSObject m = (QuickJSObject)o;
         assertTrue(m.containsProperty("salaries"));
+        m.release(); //JSObject should be released as soon as possible
     }
     
     @Test

@@ -16,7 +16,7 @@ class NativeLibraryLoader {
                 //同样的loadLibrary(name)，windows中加载name.dll
                 //linux/android加载libname.so，macOS加载libname.dylib
                 //所以，在不同系统中，使用独立的动态库，要注意名称
-                QuickJSLogger.instance().info("load {} from system", libName);
+                QuickJSLogger.instance().info("load {} from android system", libName);
                 int idx = libName.lastIndexOf('.'); //不要末尾的.so
                 System.loadLibrary(libName.substring(0, idx));
                 return;

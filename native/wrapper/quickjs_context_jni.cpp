@@ -266,35 +266,6 @@ Java_cn_net_zhijian_quickjs_QuickJSContext_dumpMemoryUsage(JNIEnv *env, jclass c
 }
 
 extern "C"
-JNIEXPORT void JNICALL
-Java_cn_net_zhijian_quickjs_QuickJSContext_dumpObjects(JNIEnv *env, jobject thiz, jlong runtime,
-                                                        jstring file_name) {
-    auto *rt = reinterpret_cast<JSRuntime*>(runtime);
-
-    if (file_name == nullptr) {
-        //JS_DumpObjects(rt);
-        return;
-    }
-    const char *path = env->GetStringUTFChars(file_name, JNI_FALSE);
-    // 这里重定向打印日志到指定文件，方便查看。
-    // todo 打印完需要再恢复到控制台打印，参考：https://cloud.tencent.com/developer/article/1544633
-    auto file = freopen(path, "w", stdout);
-    env->ReleaseStringUTFChars(file_name, path);
-    if (!file) {
-        env->ThrowNew(env->FindClass("java/lang/NullPointerException"), "File cannot be null");
-        return;
-    }
-
-    JSMemoryUsage stats;
-    JS_ComputeMemoryUsage(rt, &stats);
-    JS_DumpMemoryUsage(stdout, &stats, rt);
-
-    //JS_DumpObjects(rt);
-
-    fclose(file);
-}
-
-extern "C"
 JNIEXPORT jobject JNICALL
 Java_cn_net_zhijian_quickjs_QuickJSContext_getOwnPropertyNames(JNIEnv *env, jobject thiz,
                                                                 jlong context, jlong obj_value) {

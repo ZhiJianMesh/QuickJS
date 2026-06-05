@@ -166,30 +166,13 @@ public class QuickJSContext implements AutoCloseable {
         dumpMemoryUsage(runtime, fileName);
     }
 
-    // will use stdout to print.
     public void dumpMemoryUsage() {
-        dumpMemoryUsage(null);
-    }
-
-    public void dumpObjects(File target) {
-        checkSameThread();
-        checkDestroyed();
-        String fileName = null;
-        if (target != null && target.exists()) {
-            fileName = target.getAbsolutePath();
-        }
-
-        dumpObjects(runtime, fileName);
+        dumpMemoryUsage(null); //print to stdout
     }
 
     //used in native
     public JSObjectCreator getCreator() {
         return creator;
-    }
-
-    // will use stdout to print.
-    public void dumpObjects() {
-        dumpObjects(null);
     }
 
     private final long runtime;
@@ -250,8 +233,8 @@ public class QuickJSContext implements AutoCloseable {
     public void setEnableStackTrace(boolean enableStackTrace) {
         this.enableStackTrace = enableStackTrace;
     }
-
-    private void checkSameThread() {
+    
+    protected void checkSameThread() {
         boolean isSameThread = currentThreadId == Thread.currentThread().threadId();
         if (!isSameThread) {
             throw new QuickJSException("Must be called in the same thread");
@@ -314,7 +297,6 @@ public class QuickJSContext implements AutoCloseable {
 
     @Override
     public void close() {
-        QuickJSLogger.instance().debug("Close JS context");
         checkSameThread();
         checkDestroyed();
 
@@ -613,7 +595,6 @@ public class QuickJSContext implements AutoCloseable {
     private native void runGC(long runtime);
     private native void setMemoryLimit(long runtime, int size);
     private native void dumpMemoryUsage(long runtime, String fileName);
-    private native void dumpObjects(long runtime, String fileName);
     private native long getMemoryUsedSize(long runtime);
     private native void setGCThreshold(long runtime, int size);
 

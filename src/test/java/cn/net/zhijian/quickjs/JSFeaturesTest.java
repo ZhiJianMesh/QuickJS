@@ -113,6 +113,41 @@ public class JSFeaturesTest extends UnitTestBase {
         assertEquals(code, 0);
     }
     
+    @Test
+    public void testComplexAutoRunWithJavaObj() {
+        String js = "(function() {"
+                + "var dbs=[{\"name\":\"192.168.1.6:8523\",\"ut\":1775875156723,\"val\":\"[{\\\"no\\\":0,\\\"level\\\":0,\\\"type\\\":\\\"SQLITE\\\",\\\"shardStart\\\":0,\\\"shardEnd\\\":32768,\\\"mode\\\":\\\"master\\\",\\\"readConn\\\":2,\\\"writeConn\\\":1,\\\"slaves\\\":\\\"192.168.1.6:8525\\\"}]\"}];\n"
+                + "  var nodes,s;\n"
+                + "  var shardings={};\n"
+                + "  for(var d of dbs) { //addr(name)->cfg(val)\n"
+                + "    nodes=JSON.parse(d.val); //[{no:xx,level:xx,shardStart:xx,shardEnd:..}..]\n"
+                + "    for(var n of nodes) {\n"
+                + "      if(!(s = shardings[n.no])){\n"
+                + "       s=new Array(32768).fill(0);\n"
+                + "       shardings[n.no]=s;\n"
+                + "      }\n"
+                + "      for(var i=n.shardStart;i<n.shardEnd;i++) {\n"
+                + "        if(s[i]!=0) {//重叠分片\n"
+                + "          return Mesh.error(RetCode.DATA_WRONG, 'duplicated sharding,('+n.shardStart+'-'+n.shardEnd+')@'+d.name+'#'+n.no);\n"
+                + "        }\n"
+                + "        s[i]=1;\n"
+                + "      }\n"
+                + "    }\n"
+                + "  }\n"
+                + "  for(var no in shardings) {//dbNo->sharding\n"
+                + "    s=shardings[no];\n"
+                + "    for(var i in s) {\n"
+                + "      if(s[i]==0) { //未覆盖的分片\n"
+                + "        return Mesh.error(RetCode.DATA_WRONG, 'empty sharding,('+i+')#'+no);\n"
+                + "      }\n"
+                + "    }\n"
+                + "  }\n"
+                + "  return Mesh.success({});\n"
+                + "})()";
+        Object hr = getContext().evaluate(js);
+        assertEquals("{\"code\":0,\"info\":\"Success\",\"data:\":{}}", hr);
+    }
+    
     private static int parseInt(Object o) {
         if(o == null) return Integer.MIN_VALUE;
         if(o instanceof Number) return ((Number)o).intValue();

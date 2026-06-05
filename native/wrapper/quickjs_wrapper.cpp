@@ -515,11 +515,8 @@ jobject QuickJSWrapper::evaluate(JNIEnv *env, jobject thiz, jstring script, jstr
 
         WAIT_PROMISE(context, result);
     }
-    JSValue global = JS_GetGlobalObject(context);
-    jobject jObj = toJavaObject(env, thiz, global, result);
-    JS_FreeValue(context, global);
 
-    return jObj;
+    return toJavaObject(env, thiz, JS_UNDEFINED, result);
 }
 
 jobject QuickJSWrapper::getGlobalObject(JNIEnv *env, jobject thiz) const {

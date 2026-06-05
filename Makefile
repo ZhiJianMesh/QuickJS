@@ -17,7 +17,7 @@
 
 # ----- 用户配置 -------------------------------------------------------------
 JDK_HOME            ?= /usr/lib/jvm/java-21-openjdk-amd64
-QUICKJS_NG_VERSION  ?= v0.14.0
+QUICKJS_NG_VERSION  ?= v0.15.0
 
 # ----- 路径定义 -------------------------------------------------------------
 PROJECT_ROOT        := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))

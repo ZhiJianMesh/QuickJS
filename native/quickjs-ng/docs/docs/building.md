@@ -58,6 +58,3 @@ make test262-update
 
 This will run the test262 suite and update the error / pass report, useful after
 implementing a new feature that would alter the result of the test suite.
-
-[CMake]: https://cmake.org
-[Makefile]: https://www.gnu.org/software/make/

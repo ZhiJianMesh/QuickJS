@@ -39,7 +39,8 @@ public abstract class QuickJSLogger {
         return logger;
     }
     
-    //模仿logback格式化的特征实现
+    //Imitate logback's format, use '{}' as placeholder
+	//{{}} doesn't handled, so can't print '{}'
     protected String formatInfo(String fmt, Object... args) {
         if(args == null || args.length == 0) {
             return fmt;

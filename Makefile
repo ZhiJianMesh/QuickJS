@@ -89,14 +89,15 @@ define build_platform
 	@echo ">>> 完成: $(RESOURCE_NATIVE_DIR)/$(2)/$(3)/quickjs-jni-wrapper$(7)"
 endef
 
+# 1:架构名称，2：架构目录
 define build_android
-	@echo ">>> 使用 NDK 交叉编译 Android/aarch64 ..."
-	@mkdir -p $(PROJECT_ROOT)/build_android_aarch64
+	@echo ">>> 使用 NDK 交叉编译 Android/build_android_$(2) ..."
+	@mkdir -p $(PROJECT_ROOT)/build_android_$(2)
 
-	cd $(PROJECT_ROOT)/build_android_aarch64 && \
+	cd $(PROJECT_ROOT)/build_android_$(2) && \
 	cmake $(QUICKJS_SRC_DIR) \
 		-DCMAKE_TOOLCHAIN_FILE=$(ANDROID_NDK_HOME)/build/cmake/android.toolchain.cmake \
-		-DANDROID_ABI=arm64-v8a \
+		-DANDROID_ABI=$(1) \
 		-DANDROID_PLATFORM=android-21 \
 		-DANDROID_STL=c++_static \
 		-DCMAKE_BUILD_TYPE=Release \
@@ -107,15 +108,15 @@ define build_android
 		-DJAVA_INCLUDE_PATH="$(JDK_HOME)/include" \
 		-DJAVA_INCLUDE_PATH2="$(JDK_HOME)/include/linux" \
 		-G "Unix Makefiles"
-	cd $(PROJECT_ROOT)/build_android_aarch64 && cmake --build . --target qjs
-	mkdir -p $(PROJECT_ROOT)/build_android_aarch64/jni_build
-	cd $(PROJECT_ROOT)/build_android_aarch64/jni_build && \
+	cd $(PROJECT_ROOT)/build_android_$(2) && cmake --build . --target qjs
+	mkdir -p $(PROJECT_ROOT)/build_android_$(2)/jni_build
+	cd $(PROJECT_ROOT)/build_android_$(2)/jni_build && \
 	cmake $(PROJECT_ROOT) \
 		-DQUICKJS_SOURCE_DIR=$(QUICKJS_SRC_DIR) \
 		-DJNI_WRAPPER_SOURCE_DIR=$(JNI_WRAPPER_SRC_DIR) \
-		-DQUICKJS_LIBRARY_PATH="$(PROJECT_ROOT)/build_android_aarch64/libqjs.so" \
+		-DQUICKJS_LIBRARY_PATH="$(PROJECT_ROOT)/build_android_$(2)/libqjs.so" \
 		-DCMAKE_TOOLCHAIN_FILE=$(ANDROID_NDK_HOME)/build/cmake/android.toolchain.cmake \
-		-DANDROID_ABI=arm64-v8a \
+		-DANDROID_ABI=$(1) \
 		-DANDROID_PLATFORM=android-21 \
 		-DANDROID_STL=c++_static \
 		-DCMAKE_BUILD_TYPE=Release \
@@ -123,10 +124,10 @@ define build_android
 		-DJAVA_INCLUDE_PATH2="$(JDK_HOME)/include/linux" \
 		-G "Unix Makefiles"
 
-	cd $(PROJECT_ROOT)/build_android_aarch64/jni_build && cmake --build . --target quickjs-jni-wrapper
-	mkdir -p $(RESOURCE_DIR)/jniLibs/arm64-v8a
-	cp $(PROJECT_ROOT)/build_android_aarch64/jni_build/native/Android/aarch64/quickjs-jni-wrapper.so $(RESOURCE_DIR)/jniLibs/arm64-v8a/
-	@echo ">>> 完成: $(RESOURCE_DIR)/jniLibs/arm64-v8a/quickjs-jni-wrapper.so"
+	cd $(PROJECT_ROOT)/build_android_$(2)/jni_build && cmake --build . --target quickjs-jni-wrapper
+	mkdir -p $(RESOURCE_DIR)/jniLibs/$(1)
+	cp $(PROJECT_ROOT)/build_android_$(2)/jni_build/native/Android/$(2)/quickjs-jni-wrapper.so $(RESOURCE_DIR)/jniLibs/$(1)/libquickjs-jni-wrapper.so
+	@echo ">>> 完成: $(RESOURCE_DIR)/jniLibs/$(1)/lib/android/libquickjs-jni-wrapper.so"
 endef
 
 # ============================================================================
@@ -147,7 +148,10 @@ win-x86_64: get-quickjs
 
 # ----- Android arm64 -----
 android-aarch64: get-quickjs
-	$(call build_android)
+	$(call build_android,arm64-v8a,aarch64)
+
+android-x86_64: get-quickjs
+	$(call build_android,x86_64,x86_64)
 
 # ----- Termux aarch64 (直接在 Termux 中编译，使用 clang) --------------------
 # 注意：系统名设为 Android，以便 CMake 正确识别（Termux 本质是 Android 环境）
@@ -172,7 +176,7 @@ jar:
 # ============================================================================
 # 构建所有默认平台 (可自定义)
 # ============================================================================
-all: linux-x86_64 linux-aarch64 win-x86_64 android-aarch64
+all: linux-x86_64 linux-aarch64 win-x86_64 android-aarch64 android-x86_64
 
 # ============================================================================
 # 清理
@@ -189,8 +193,9 @@ help:
 	@echo "  linux-x86_64, linux-aarch64"
 	@echo "  win-x86_64"
 	@echo "  android-aarch64"
+	@echo "  android-x86_64"
 	@echo "  termux-aarch64"
 	@echo "  all, jar, clean"
 
 .PHONY: all clean help jar get-quickjs \
-	linux-x86_64 linux-aarch64 win-x86_64 android-aarch64 termux-aarch64
+	linux-x86_64 linux-aarch64 win-x86_64 android-aarch64 android-x86_64 termux-aarch64

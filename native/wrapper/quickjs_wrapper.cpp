@@ -8,20 +8,6 @@
 #include <cmath>
 
 #define MAX_SAFE_INTEGER (((int64_t)1 << 53) - 1)
-#define WAIT_PROMISE(context, value) do { \
-    int state = JS_PromiseState(context, value);\
-    if (state == JS_PROMISE_FULFILLED) {\
-        JSValue fulfilled_value = JS_PromiseResult(context, value);\
-        JS_FreeValue(context, value);\
-        value = fulfilled_value;\
-    } else if (state == JS_PROMISE_REJECTED) {\
-        JSValue reason = JS_PromiseResult(context, value);\
-        JS_Throw(context, reason);  \
-        JS_FreeValue(context, reason);\
-        JS_FreeValue(context, value);\
-        return nullptr;\
-    }\
-} while(0)
 
 // util
 static string getJavaName(JNIEnv* env, jobject javaClass) {
@@ -319,6 +305,29 @@ static bool executePendingJobLoop(JNIEnv *env, JSRuntime *rt, JSContext *ctx) {
     return success;
 }
 
+static JSValue waitPromise(JNIEnv* env, JSRuntime *rt, JSContext *context, JSValue value) {
+    if (!executePendingJobLoop(env, rt, context)) { 
+        JS_FreeValue(context, value);
+        return JS_NULL;
+    }
+    
+    int state = JS_PromiseState(context, value);
+    if (state == JS_PROMISE_FULFILLED) {
+        JSValue fulfilled_value = JS_PromiseResult(context, value);
+        JS_FreeValue(context, value);
+        return fulfilled_value;
+    }
+    
+    if (state == JS_PROMISE_REJECTED) {
+        JSValue reason = JS_PromiseResult(context, value);
+        JS_Throw(context, reason);
+        JS_FreeValue(context, reason);
+        JS_FreeValue(context, value);
+    }
+    
+    return JS_NULL;
+}
+
 static void promiseRejectionTracker(JSContext *ctx, JSValueConst promise,
                                     JSValueConst reason, bool is_handled, void *opaque) {
     auto unhandledRejections = static_cast<queue<JSValue> *>(opaque);
@@ -508,12 +517,10 @@ jobject QuickJSWrapper::evaluate(JNIEnv *env, jobject thiz, jstring script, jstr
     }
     
     if(JS_IsPromise(result)) {
-        if (!executePendingJobLoop(env, runtime, context)) {
-            JS_FreeValue(context, result);
+        result = waitPromise(env, runtime, context, result);
+        if(JS_IsNull(result)) {
             return nullptr;
         }
-
-        WAIT_PROMISE(context, result);
     }
 
     return toJavaObject(env, thiz, JS_UNDEFINED, result);
@@ -586,12 +593,10 @@ jobject QuickJSWrapper::call(JNIEnv *env, jobject thiz, jlong func, jlong this_o
     vector<JSValue>().swap(freeArguments);
 
     if(JS_IsPromise(ret)) {
-        if (!executePendingJobLoop(env, runtime, context)) {
-            JS_FreeValue(context, ret);
+        ret = waitPromise(env, runtime, context, ret);
+        if(JS_IsNull(ret)) {
             return nullptr;
         }
-        
-        WAIT_PROMISE(context, ret);
     }
 
     return toJavaObject(env, thiz, jsObj, ret);
@@ -833,14 +838,12 @@ jobject QuickJSWrapper::execute(JNIEnv *env, jobject thiz, jbyteArray bytecode) 
         return nullptr;
     }
 
-    auto val = JS_EvalFunction(context, obj);
+    JSValue val = JS_EvalFunction(context, obj);
     if(JS_IsPromise(val)) {
-        if (!executePendingJobLoop(env, runtime, context)) {
-            JS_FreeValue(context, val);
+        val = waitPromise(env, runtime, context, val);
+        if(JS_IsNull(val)) {
             return nullptr;
         }
-
-        WAIT_PROMISE(context, val);
     }
 
     if (JS_IsException(val)) {
@@ -878,10 +881,10 @@ jobject QuickJSWrapper::evaluateModule(JNIEnv *env, jobject thiz, jstring script
         return nullptr;
     }
 
-    // 3. 处理 Promise（顶层 await）
+    // 3. 处理 Promise
     if (JS_IsPromise(result)) {
-        if (!executePendingJobLoop(env, runtime, context)) {
-            JS_FreeValue(context, result);
+        result = waitPromise(env, runtime, context, result);
+        if (JS_IsNull(result)) {
             return nullptr;
         }
     }

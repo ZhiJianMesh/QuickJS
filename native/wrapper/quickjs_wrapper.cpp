@@ -11,10 +11,10 @@
 
 // util
 static string getJavaName(JNIEnv* env, jobject javaClass) {
-    auto classType = env->GetObjectClass(javaClass);
-    const auto method = env->GetMethodID(classType, "getName", "()Ljava/lang/String;");
-    auto javaString = (jstring)(env->CallObjectMethod(javaClass, method));
-    const auto s = env->GetStringUTFChars(javaString, nullptr);
+    jclass classType = env->GetObjectClass(javaClass);
+    const jmethodID method = env->GetMethodID(classType, "getName", "()Ljava/lang/String;");
+    jstring javaString = (jstring)(env->CallObjectMethod(javaClass, method));
+    const char* s = env->GetStringUTFChars(javaString, nullptr);
 
     std::string str(s);
     env->ReleaseStringUTFChars(javaString, s);
@@ -210,8 +210,8 @@ static JSModuleDef *jsModuleLoaderFunc(JSContext *ctx, const char *module_name, 
         env->DeleteLocalRef(bytecode);
 
         if (JS_IsException(obj)) {
-			throwJSException(env, ctx);// convert js exception to java exception
-			m = (JSModuleDef *) JS_VALUE_GET_PTR(JS_EXCEPTION);
+            throwJSException(env, ctx);// convert js exception to java exception
+            m = (JSModuleDef *) JS_VALUE_GET_PTR(JS_EXCEPTION);
             goto END_LOADER;
         }
 
@@ -245,8 +245,8 @@ static JSModuleDef *jsModuleLoaderFunc(JSContext *ctx, const char *module_name, 
         env->DeleteLocalRef(result);
 
         if (JS_IsException(func_val)) {
-			throwJSException(env, ctx);// 获取异常信息
-			m = (JSModuleDef *) JS_VALUE_GET_PTR(JS_EXCEPTION);
+            throwJSException(env, ctx);// 获取异常信息
+            m = (JSModuleDef *) JS_VALUE_GET_PTR(JS_EXCEPTION);
             goto END_LOADER;
         }
         m = (JSModuleDef*) JS_VALUE_GET_PTR(func_val);
@@ -741,8 +741,8 @@ JSValue QuickJSWrapper::toJSValue(JNIEnv *env, jobject thiz, jobject value) cons
         int *callbackId = new int(jniEnv->CallIntMethod(value, callFunctionHashCodeM));
         JS_SetOpaque(obj, callbackId);
     } else {
-        auto classType = env->GetObjectClass(value);
-        const auto typeName = getJavaName(env, classType);
+        jclass classType = env->GetObjectClass(value);
+        const string typeName = getJavaName(env, classType);
         env->DeleteLocalRef(classType);
         // Throw an exception for unsupported argument type.
         throwJavaException(env, "java/lang/IllegalArgumentException", "Unsupported Java type %s",
@@ -779,7 +779,7 @@ jobject QuickJSWrapper::parseJSON(JNIEnv *env, jobject thiz, jstring json) {
     env->ReleaseStringUTFChars(json, c_json);
     if (JS_IsException(jsonObj)) {
         throwJSException(env, context);
-		return nullptr;
+        return nullptr;
     }
     return toJavaObject(env, thiz, JS_UNDEFINED, jsonObj);
 }
@@ -848,7 +848,7 @@ jobject QuickJSWrapper::execute(JNIEnv *env, jobject thiz, jbyteArray bytecode) 
 
     if (JS_IsException(val)) {
         throwJSException(env, context);
-		return nullptr;
+        return nullptr;
     }
 
     return toJavaObject(env, thiz, JS_UNDEFINED, val);
@@ -914,7 +914,7 @@ jobject QuickJSWrapper::getOwnPropertyNames(JNIEnv *env, jobject thiz, jlong obj
     JSValue ret = JS_Call(context, ownPropertyNames, JS_NULL, 1, &jsObject);
     if (JS_IsException(ret)) {
         throwJSException(env, context);
-		return nullptr;
+        return nullptr;
     }
 
     return toJavaObject(env, thiz, JS_UNDEFINED, ret);

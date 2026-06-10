@@ -152,17 +152,17 @@ array.release();
 ```Java
 QuickJSContext context = createContext();
 context.getGlobalObject().setProperty("test", args -> (JSCallFunction) args1 -> "123");
-context.evaluate("console.log(test()());");
+context.evaluate("console.log(test());");
 ```
 
-Also, you can view it in `QuickJSTest.testReturnJSCallback` code
+Also, you can view it in `JavaFeaturesTest.testJavaFunctionBinding`
 
 
 ### Compile ByteCode
 
 ```Java
 byte[] code = context.compile("'hello, world!'.toUpperCase();");
-context.execute(code);
+context.execute(code); //caution:not evaluate()
 ```
 
 ### ESModule
@@ -197,28 +197,68 @@ context.setModuleLoader(new QuickJSContext.BytecodeModuleLoader() {
 // 3. use module script with 'evaluate'
 Object msg = context.evaluate("import('a.js').then(m => m.name+':'+m.age)"); //Jack:18
 
-// 4. use module script with 'evaluateModule'
-Object o = context.evaluateModule("import {name, age, report} from 'a.js'; export {name, age, report}", "c.js");
+// 4. load module with 'evaluateModule' directly
+Object o = context.evaluateModule(
+        "export var name = 'Jack';\n" +
+        "export var age = 18;\n" +
+        "export function report() { return name + ':' + age};", 
+        "a.js");
 JSObject module = (JSObject)o;
-String name = (String) module.getProperty("name"); //Jack
-int age = (Integer)module.getInteger("age"); //18
+String name = module.getString("name"); //Jack
+int age = module.getInteger("age"); //18
 JSFunction f = module.getJSFunction("report");
 String result = (String) f.call(); //Jack:18
 //===be sure to release them after using===
 f.release();
 module.release();
 
-// 5. load module with 'evaluateModule' directly
-Object o = context.evaluateModule(
+// 5. load module to global module
+context.evaluateModuleToGlobal(
         "export var name = 'Jack';\n" +
         "export var age = 18;\n" +
-        "export function report() { return name + ':' + age};", 
-        "a.js");
-JSObject module = (JSObject) o;
-...
-
+        "export function report() { return name + ':' + age};");
+context.evaluate("name"); //Jack
+context.evaluate("age"); //18
+context.evaluate("report()");//Jack:18
 ```
 
+### Used in multi-thread
+QuickJSContext can only be created,used,closed in the same thread.
+So in a ThreadPool, the optional ways are:
+1. Create a fixed number thread by newFixedThreadPool;
+Create context in each thread and never close it. It will be closed when java progress over;
+2. Create a context at the begin of the thread and close it at the end of the thread.
+Save the context into ThreadLocal, and get it from ThreadLocal when using.
+Following code is a example of way 2.
+
+```Java
+ThreadLocal<QuickJSContext> threadContext = new ThreadLocal<>();
+ExecutorService pool = new ThreadPoolExecutor(1, 100, 10 * 1000L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), new ThreadFactory() {
+    private final AtomicInteger threadNumber = new AtomicInteger(1);
+    @Override
+    public Thread newThread(Runnable r) {
+        String name = "TestMulti-" + threadNumber.getAndIncrement();
+        Runnable wrapped = () -> {
+            QuickJSContext ctx =  QuickJSContext.create();
+            //do some initialization here
+            threadContext.set(ctx);
+            try {
+                r.run();
+            } finally {
+                threadContext.set(null);
+                ctx.close(); //close it when the thread destroyed
+            }
+        };
+        return new Thread(wrapped, name);
+    }            
+});
+pool.execute(() -> {
+    QuickJSContext ctx = threadContext.get(); //get it from ThreadLocal
+    ctx.evaluate(...);
+});
+...
+pool.close();
+``` 
 
 ### Object release
 We typically recommend releasing reference relationships actively after using Java objects to avoid memory leaks. Additionally, the engine will release unreleased objects when destroy, but it may be a bit later.

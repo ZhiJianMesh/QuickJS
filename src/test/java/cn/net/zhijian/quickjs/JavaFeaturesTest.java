@@ -247,10 +247,10 @@ public class JavaFeaturesTest extends UnitTestBase {
         o = ctx.evaluateModule("import {name, age, report} from '"+moduleName+"'; export {name, age, report}", "c.js");
         assertTrue(o != null && o instanceof JSObject);
         JSObject module = (JSObject)o;
-        String name = (String) module.getProperty("name");
+        String name = module.getString("name");
         assertNotNull(name);
         assertEquals(name, "Jack");
-        int age = (Integer)module.getInteger("age");
+        int age = module.getInteger("age");
         assertEquals(age, 18);
         JSFunction f = module.getJSFunction("report");
         assertTrue(f != null);

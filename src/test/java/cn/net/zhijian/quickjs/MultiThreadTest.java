@@ -6,11 +6,47 @@ import static org.junit.jupiter.api.Assertions.fail;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 
+import cn.net.zhijian.quickjs.UnitTestBase.JsMesh;
+
 public class MultiThreadTest {
+    private static final String complexJs = "(function() {"
+        + "var dbs=[{\"name\":\"192.168.1.6:8523\",\"ut\":1775875156723,\"val\":\"[{\\\"no\\\":0,\\\"level\\\":0,\\\"type\\\":\\\"SQLITE\\\",\\\"shardStart\\\":0,\\\"shardEnd\\\":32768,\\\"mode\\\":\\\"master\\\",\\\"readConn\\\":2,\\\"writeConn\\\":1,\\\"slaves\\\":\\\"192.168.1.6:8525\\\"}]\"}];\n"
+        + "  var nodes,s;\n"
+        + "  var shardings={};\n"
+        + "  for(var d of dbs) { //addr(name)->cfg(val)\n"
+        + "    nodes=JSON.parse(d.val); //[{no:xx,level:xx,shardStart:xx,shardEnd:..}..]\n"
+        + "    for(var n of nodes) {\n"
+        + "      if(!(s = shardings[n.no])){\n"
+        + "       s=new Array(32768).fill(0);\n"
+        + "       shardings[n.no]=s;\n"
+        + "      }\n"
+        + "      for(var i=n.shardStart;i<n.shardEnd;i++) {\n"
+        + "        if(s[i]!=0) {//重叠分片\n"
+        + "          return Mesh.error(RetCode.DATA_WRONG, 'duplicated sharding,('+n.shardStart+'-'+n.shardEnd+')@'+d.name+'#'+n.no);\n"
+        + "        }\n"
+        + "        s[i]=1;\n"
+        + "      }\n"
+        + "    }\n"
+        + "  }\n"
+        + "  for(var no in shardings) {//dbNo->sharding\n"
+        + "    s=shardings[no];\n"
+        + "    for(var i in s) {\n"
+        + "      if(s[i]==0) { //未覆盖的分片\n"
+        + "        return Mesh.error(RetCode.DATA_WRONG, 'empty sharding,('+i+')#'+no);\n"
+        + "      }\n"
+        + "    }\n"
+        + "  }\n"
+        + "  return Mesh.success({});\n"
+        + "})()";
+    
     @Test
     public void testMultiThreadWithExclusiveContext() {
         int N = Runtime.getRuntime().availableProcessors();
@@ -30,7 +66,7 @@ public class MultiThreadTest {
                 try (QuickJSContext ctx =  QuickJSContext.create()) {
                     //ctx.setMaxStackSize(1024 * 1024 * 4);
                     for(int j = 0; j < T; j++) {
-                        Object r = ctx.evaluate("1 + 2;");
+                        Object r = ctx.evaluate("1+2");
                         if(r.equals(3)) {
                             n++;
                         }
@@ -55,46 +91,78 @@ public class MultiThreadTest {
     }
     
     @Test
-    public void testUsedInDifferentThread() {
-        String js = "(function() {"
-                + "var dbs=[{\"name\":\"192.168.1.6:8523\",\"ut\":1775875156723,\"val\":\"[{\\\"no\\\":0,\\\"level\\\":0,\\\"type\\\":\\\"SQLITE\\\",\\\"shardStart\\\":0,\\\"shardEnd\\\":32768,\\\"mode\\\":\\\"master\\\",\\\"readConn\\\":2,\\\"writeConn\\\":1,\\\"slaves\\\":\\\"192.168.1.6:8525\\\"}]\"}];\n"
-                + "  var nodes,s;\n"
-                + "  var shardings={};\n"
-                + "  for(var d of dbs) { //addr(name)->cfg(val)\n"
-                + "    nodes=JSON.parse(d.val); //[{no:xx,level:xx,shardStart:xx,shardEnd:..}..]\n"
-                + "    for(var n of nodes) {\n"
-                + "      if(!(s = shardings[n.no])){\n"
-                + "       s=new Array(32768).fill(0);\n"
-                + "       shardings[n.no]=s;\n"
-                + "      }\n"
-                + "      for(var i=n.shardStart;i<n.shardEnd;i++) {\n"
-                + "        if(s[i]!=0) {//重叠分片\n"
-                + "          return Mesh.error(RetCode.DATA_WRONG, 'duplicated sharding,('+n.shardStart+'-'+n.shardEnd+')@'+d.name+'#'+n.no);\n"
-                + "        }\n"
-                + "        s[i]=1;\n"
-                + "      }\n"
-                + "    }\n"
-                + "  }\n"
-                + "  for(var no in shardings) {//dbNo->sharding\n"
-                + "    s=shardings[no];\n"
-                + "    for(var i in s) {\n"
-                + "      if(s[i]==0) { //未覆盖的分片\n"
-                + "        return Mesh.error(RetCode.DATA_WRONG, 'empty sharding,('+i+')#'+no);\n"
-                + "      }\n"
-                + "    }\n"
-                + "  }\n"
-                + "  return Mesh.success({});\n"
-                + "})()";
-
+    public void testMultiThreadWithThreadLocal() throws InterruptedException {
+        ThreadLocal<QuickJSContext> threadContext = new ThreadLocal<>();
+        int N = Runtime.getRuntime().availableProcessors() * 2;
+        AtomicInteger c = new AtomicInteger(0);
+        //多线程最佳解决方案，在线程的开始处创建context，销毁时关闭context
+        ExecutorService pool = new ThreadPoolExecutor(1, N / 2, 200L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), new ThreadFactory() {
+            private final AtomicInteger threadNumber = new AtomicInteger(1);
+            @Override
+            public Thread newThread(Runnable r) {
+                String name = "TestMulti-" + threadNumber.getAndIncrement();
+                Runnable wrapped = () -> {
+                    QuickJSContext ctx =  QuickJSContext.create();
+                    System.out.println("Thread " + name + " created");
+                    ctx.getGlobalObject().setJavaObject("Mesh", new JsMesh());
+                    threadContext.set(ctx);
+                    try {
+                        r.run();
+                    } finally {
+                        threadContext.set(null);
+                        ctx.close();
+                        System.out.println("Thread " + name + " destoried");
+                    }
+                };
+                return new Thread(wrapped, name);
+            }            
+        });
+        CountDownLatch holder = new CountDownLatch(N);
+        long start = System.currentTimeMillis();
+        
+        for(int i = 0; i < N; i++) {
+            pool.submit(() -> {
+                QuickJSContext ctx = threadContext.get();
+                try {
+                    String r = (String)ctx.evaluate(complexJs);
+                    if(r.startsWith("{\"code\":0")) {
+                        c.incrementAndGet();
+                    }
+                } finally {
+                    holder.countDown();
+                }
+            });
+        }
+        long end = System.currentTimeMillis();
+        long interval = end - start;
+        
+        System.out.println("testMultiThreadWithThreadLocal,use time:" + interval + ",speed:" + (1000L * N) / interval);
+    
+        try {
+            holder.await();
+        } catch (InterruptedException e) {
+            fail(e.getMessage());
+        }
+        assertEquals(N, c.get());
+        Thread.sleep(1000);
+        System.out.println("Wait 2 seconds in testMultiThreadWithThreadLocal");
+        pool.close();
+    }
+    
+    @Test
+    public void testUseInDifferentThread() {
+        //QuickJSContext can only be used in the thread which created it
         QuickJSContext ctx =  QuickJSContext.create();
+        ctx.getGlobalObject().setJavaObject("Mesh", new JsMesh());
         CountDownLatch holder = new CountDownLatch(1);
         AtomicInteger c = new AtomicInteger(0);
         new Thread() {
             public void run() {
                 try {
-                    ctx.evaluate(js);
+                    ctx.evaluate(complexJs);
                 } catch(Exception e) {
                     c.incrementAndGet();
+                    //e.printStackTrace();
                 } finally {
                     holder.countDown();
                 }

@@ -356,4 +356,25 @@ public class JSFeaturesTest extends UnitTestBase {
         assertEquals(result, "Jack:18");
         module.release();
     }
+    
+    @Test
+    public void testEvaluateJsModuleToGlobal() {
+        getContext().evaluateModuleToGlobal(
+                "export var name = 'Jack';\n" +
+                "export var student = {name:'Jack',age:18};\n" +
+                "export var age = 18;\n" +
+                "export function report() { return name + ':' + age};");
+        
+        Object o = getContext().evaluate("name");
+        assertEquals("Jack", o);
+        o = getContext().evaluate("age");
+        assertEquals(18, o);
+        o = getContext().evaluate("report()");
+        assertEquals("Jack:18", o);
+
+        o = getContext().evaluate("student.name");
+        assertEquals("Jack", o);
+        o = getContext().evaluate("student.age");
+        assertEquals(18, o);
+    }
 }

@@ -18,7 +18,7 @@ eclipse {
     }
 }
 
-version = '0.2.1'
+version = '0.2.2'
 group = "cn.net.zhijian.quickjs"
 
 repositories {
@@ -48,6 +48,7 @@ dependencies {
 
 jar {
     archiveBaseName = 'cn.net.zhijian.quickjs'
+    exclude 'jniLibs/**'
     manifest {
         attributes(
             'Manifest-Version':"${version}",

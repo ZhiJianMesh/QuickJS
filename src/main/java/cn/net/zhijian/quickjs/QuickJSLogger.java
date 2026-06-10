@@ -40,7 +40,7 @@ public abstract class QuickJSLogger {
     }
     
     //Imitate logback's format, use '{}' as placeholder
-	//{{}} doesn't handled, so can't print '{}'
+    //{{}} doesn't handled, so can't print '{}'
     protected String formatInfo(String fmt, Object... args) {
         if(args == null || args.length == 0) {
             return fmt;

@@ -52,8 +52,7 @@ DefaultConsole will be used if not set. DefaultConsole print information to logg
 ```
 
 ### Supported Types
-
-#### Java and JavaScript can directly convert to each other for the following basic types
+The following basic types of Java and JavaScript can directly convert to each other.
 | JavaScript  | Java              |
 |-------------|-------------------|
 | null        | null              |
@@ -222,44 +221,6 @@ context.evaluate("age"); //18
 context.evaluate("report()");//Jack:18
 ```
 
-### Used in multi-thread
-QuickJSContext can only be created,used,closed in the same thread.
-So in a ThreadPool, the optional ways are:
-1. Create a fixed number thread by newFixedThreadPool;
-Create context in each thread and never close it. It will be closed when java progress over;
-2. Create a context at the begin of the thread and close it at the end of the thread.
-Save the context into ThreadLocal, and get it from ThreadLocal when using.
-Following code is a example of way 2.
-
-```Java
-ThreadLocal<QuickJSContext> threadContext = new ThreadLocal<>();
-ExecutorService pool = new ThreadPoolExecutor(1, 100, 10 * 1000L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), new ThreadFactory() {
-    private final AtomicInteger threadNumber = new AtomicInteger(1);
-    @Override
-    public Thread newThread(Runnable r) {
-        String name = "TestMulti-" + threadNumber.getAndIncrement();
-        Runnable wrapped = () -> {
-            QuickJSContext ctx =  QuickJSContext.create();
-            //do some initialization here
-            threadContext.set(ctx);
-            try {
-                r.run();
-            } finally {
-                threadContext.set(null);
-                ctx.close(); //close it when the thread destroyed
-            }
-        };
-        return new Thread(wrapped, name);
-    }            
-});
-pool.execute(() -> {
-    QuickJSContext ctx = threadContext.get(); //get it from ThreadLocal
-    ctx.evaluate(...);
-});
-...
-pool.close();
-``` 
-
 ### Object release
 We typically recommend releasing reference relationships actively after using Java objects to avoid memory leaks. Additionally, the engine will release unreleased objects when destroy, but it may be a bit later.
 ```java
@@ -291,6 +252,44 @@ context.getGlobalObject().setProperty("test", new JSCallFunction() {
   }
 });
 ```
+
+### Use it in a thread pool
+QuickJSContext can only be created,used,closed in the same thread.
+So in a thread pool, the optional ways are:
+1. Create a fixed number thread by newFixedThreadPool;
+Create context in each thread and never close it. It will not be closed until java progress over;
+2. Create a context at the begin of the thread and close it at the end of the thread.
+Save the context into ThreadLocal, and get it from ThreadLocal when using.
+Following is a example.
+
+```Java
+ThreadLocal<QuickJSContext> threadContext = new ThreadLocal<>();
+ExecutorService pool = new ThreadPoolExecutor(1, 100, 10 * 1000L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), new ThreadFactory() {
+    private final AtomicInteger threadNumber = new AtomicInteger(1);
+    @Override
+    public Thread newThread(Runnable r) {
+        String name = "TestMulti-" + threadNumber.getAndIncrement();
+        Runnable wrapped = () -> {
+            QuickJSContext ctx =  QuickJSContext.create();
+            //do some context initialization here
+            threadContext.set(ctx);
+            try {
+                r.run();
+            } finally {
+                threadContext.set(null);
+                ctx.close(); //close it when the thread destroyed
+            }
+        };
+        return new Thread(wrapped, name);
+    }            
+});
+pool.execute(() -> {
+    QuickJSContext ctx = threadContext.get(); //get it from ThreadLocal
+    ctx.evaluate(...);
+});
+...
+pool.close();
+``` 
 
 ## R8 / ProGuard
 If you are using R8 the shrinking and obfuscation rules are included automatically.

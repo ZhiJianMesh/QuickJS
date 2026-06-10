@@ -18,6 +18,8 @@ public interface JSObject {
     void setProperty(String name, byte[] value);
     void setProperty(String name, JSCallFunction value);
     void setProperty(String name, Class<?> clazz);
+    void setPropertyObject(String name, Object o);
+    
     //与setProperty(String name, Class<?> clazz)类似
     //setJavaObject设置一个java对象，将其中有@JavascriptInterface注解的函数变成js函数
     void setJavaObject(String name, Object javaObj);

@@ -107,28 +107,28 @@ public class QuickJSContext implements AutoCloseable {
 
         JSObject consoleObj = getGlobalObject().getJSObject("console");
         consoleObj.setProperty("stdout", args -> {
-            if (args.length == 2) {
-                String level = ((String) args[0]).toLowerCase();
-                String s = (String) args[1];
-                String info = s.substring(1, s.length() - 1);//前后多加了一个单引号
-                switch (level) {
-                    case "info":
-                        console.info(info);
-                        break;
-                    case "warn":
-                        console.warn(info);
-                        break;
-                    case "error":
-                        console.error(info);
-                        break;
-                    case "log":
-                    case "debug":
-                    default:
-                        console.debug(info);
-                        break;
-                }
+            if (args.length != 2) {
+                return null;
             }
-
+            String level = ((String) args[0]).toLowerCase();
+            String s = (String) args[1];
+            String info = s.substring(1, s.length() - 1);//前后多加了一个单引号
+            switch (level) {
+                case "info":
+                    console.info(info);
+                    break;
+                case "warn":
+                    console.warn(info);
+                    break;
+                case "error":
+                    console.error(info);
+                    break;
+                case "log":
+                case "debug":
+                default:
+                    console.debug(info);
+                    break;
+            }
             return null;
         });
         consoleObj.release();
@@ -235,8 +235,7 @@ public class QuickJSContext implements AutoCloseable {
     }
     
     protected void checkSameThread() {
-        boolean isSameThread = currentThreadId == Thread.currentThread().threadId();
-        if (!isSameThread) {
+        if (currentThreadId != Thread.currentThread().threadId()) {
             throw new QuickJSException("Must be called in the same thread");
         }
     }
@@ -311,7 +310,7 @@ public class QuickJSContext implements AutoCloseable {
         return destroyed;
     }
 
-    public void releaseObjectRecords(boolean needRelease) {
+    private void releaseObjectRecords(boolean needRelease) {
         JSFunction format = getGlobalObject().getJSFunction("format");
 
         // 检测是否有未被释放引用的对象，如果有的话，根据计数释放一下
@@ -367,7 +366,7 @@ public class QuickJSContext implements AutoCloseable {
         checkDestroyed();
 
         if (value instanceof JSCallFunction) {
-            // Todo 优化：可以只传 callFunctionId 给到 JNI.
+            // 优化：只传 callFunctionId 给到 JNI.
             putCallFunction((JSCallFunction) value);
         }
 
@@ -571,6 +570,36 @@ public class QuickJSContext implements AutoCloseable {
         checkSameThread();
         checkDestroyed();
         return evaluateModule(context, script, moduleName);
+    }
+    
+    /**
+     * Load module to global module
+     * After execution, you can use all properties exported
+     * from the module in the global module, include functions
+     * @param script module script,must include 'export'
+     */
+    public void evaluateModuleToGlobal(String script) {
+        if (script == null) {
+            throw new NullPointerException("Script cannot be null");
+        }
+
+        checkSameThread();
+        checkDestroyed();
+        JSObject globalModule = this.getGlobalObject();
+        JSObject module = (JSObject)evaluateModule(script);
+        
+        JSArray array = module.getNames();
+        int length = array.length();
+        for (int i = 0; i < length; i++) {
+            String key = (String) array.get(i);
+            Object value = module.getProperty(key);
+            globalModule.setPropertyObject(key, value);
+            if(value instanceof JSObject) {
+                ((JSObject)value).release();
+            }
+        }
+        module.release();
+        array.release();
     }
 
     public Object evaluateModule(String script) {

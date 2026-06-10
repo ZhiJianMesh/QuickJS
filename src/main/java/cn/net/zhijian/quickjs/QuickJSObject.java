@@ -93,7 +93,8 @@ public class QuickJSObject implements JSObject {
         setPropertyObject(name, value);
     }
 
-    private void setPropertyObject(String name, Object o) {
+    @Override
+    public void setPropertyObject(String name, Object o) {
         checkRefCountIsZero();
         context.setProperty(this, name, o);
     }

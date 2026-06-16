@@ -184,6 +184,7 @@ public class QuickJSContext implements AutoCloseable {
     private ModuleLoader moduleLoader;
     private JSObject globalObject;
     private final JSObjectCreator creator;
+    //QuickJSContext can only be used in one thread, so needn't use a concurrent array
     private final List<JSObject> objectRecords = new ArrayList<>();
     private LeakDetectionListener leakDetectionListener;
     private boolean enableStackTrace = false;
@@ -234,7 +235,7 @@ public class QuickJSContext implements AutoCloseable {
         this.enableStackTrace = enableStackTrace;
     }
     
-    protected void checkSameThread() {
+    private void checkSameThread() {
         if (currentThreadId != Thread.currentThread().threadId()) {
             throw new QuickJSException("Must be called in the same thread");
         }
@@ -405,7 +406,6 @@ public class QuickJSContext implements AutoCloseable {
             // 注意：JSObject 对象作为参数返回到️ JavaScript 中，不需要调用 release 方法，
             // JS 引擎会进行 free，但是这里需要手动对 JSObject 对象的计数减一。
             ((JSObject) ret).decrementRefCount();
-
             if (((JSObject) ret).getRefCount() == 0) {
                 objectRecords.remove(((JSObject) ret));
             }

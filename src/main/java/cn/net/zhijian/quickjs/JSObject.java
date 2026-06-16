@@ -29,7 +29,7 @@ public interface JSObject {
     boolean containsProperty(String name);
     String getString(String name);
     Integer getInteger(String name);
-    Boolean getBoolean(String name);
+    boolean getBoolean(String name);
     Double getDouble(String name);
     Long getLong(String name);
     byte[] getBytes(String name);

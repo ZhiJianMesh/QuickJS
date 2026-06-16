@@ -71,11 +71,11 @@ public class QuickJSFunction extends QuickJSObject implements JSFunction {
 
     @Override
     public HashMap<String, Object> toMap() {
-        throw new UnsupportedOperationException("JSFunction types do not support conversion to map or array.");
+        throw new UnsupportedOperationException("JSFunction doesn't support toMap");
     }
 
     @Override
     public ArrayList<Object> toArray() {
-        throw new UnsupportedOperationException("JSFunction types do not support conversion to map or array.");
+        throw new UnsupportedOperationException("JSFunction doesn't support toArray");
     }
 }

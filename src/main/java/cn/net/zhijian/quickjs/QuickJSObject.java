@@ -171,7 +171,7 @@ public class QuickJSObject implements JSObject {
     }
 
     @Override
-    public Boolean getBoolean(String name) {
+    public boolean getBoolean(String name) {
         Object value = getProperty(name);
         if(value == null) {
             return false;

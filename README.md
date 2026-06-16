@@ -299,8 +299,6 @@ ProGuard users must manually add the options from [consumer-rules.pro](/consumer
 ## Concurrency
 JavaScript runtime context must be used in a single thread at the same time.
 All execution in JavaScript runtime is guaranteed thread safe. 
-You should isolate contexts within different threads.
-For example save contexts in a resource pool. When any thread need to use, just apply from the pool. 
 
 ## Find this repository useful?
 Support it by joining __[stargazers](https://github.com/ZhiJianMesh/QuickJS/stargazers)__ for this repository. <br>

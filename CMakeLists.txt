@@ -91,6 +91,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux-Android")
     # 静默链接警告（不影响运行）
     target_link_options(quickjs-jni-wrapper PRIVATE -Wl,--as-needed -rtlib=compiler-rt)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    add_definitions(-DIS_ANDROID=TRUE)
     target_link_libraries(quickjs-jni-wrapper PRIVATE quickjs c++_static)
     target_compile_definitions(quickjs-jni-wrapper PRIVATE __ANDROID__)
     # 静默链接警告（不影响运行），以下三个选项可以大幅度减小Android环境SO的体积

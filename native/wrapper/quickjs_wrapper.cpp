@@ -2,7 +2,8 @@
 // Created by yonglan.whl on 2021/7/14.
 //
 #include "quickjs_wrapper.h"
-#include "../quickjs-ng/cutils.h"
+//cutils.h 不再包含：0.17 已把 wrapper 用到的 js_malloc/js_free/js_strdup 声明进 quickjs.h，
+//而 cutils.h 里有两处 void*→uint8_t* 赋值，clang（NDK r26）下 -fpermissive 也不放行，会直接编译失败。
 #include "quickjs_extend_libraries.h"
 #include <cstring>
 #include <cmath>
@@ -33,17 +34,23 @@ static string getJavaName(JNIEnv* env, jobject javaClass) {
 static void tryToTriggerOnError(JSContext *ctx, JSValueConst *error) {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue onerror = JS_GetPropertyStr(ctx, global, "onError");
-    if (JS_IsNull(onerror)) {
+    //属性不存在时拿到的是 JS_UNDEFINED 而不是 null，所以必须用 JS_IsFunction 判断，
+    //否则会对 undefined 发起调用，在 context 里留下一个假的 "not a function" 异常。
+    if (!JS_IsFunction(ctx, onerror)) {
         // may be lowercase
+        JS_FreeValue(ctx, onerror);
         onerror = JS_GetPropertyStr(ctx, global, "onerror");
     }
 
-    if (JS_IsNull(onerror)) {
-        // do nothing
-        return;
+    if (JS_IsFunction(ctx, onerror)) {
+        JSValue ret = JS_Call(ctx, onerror, global, 1, error);
+        if (JS_IsException(ret)) {
+            JS_FreeValue(ctx, JS_GetException(ctx)); //onError 自己抛的异常不能留在 context 里
+        } else {
+            JS_FreeValue(ctx, ret);
+        }
     }
 
-    JS_Call(ctx, onerror, global, 1, error);
     JS_FreeValue(ctx, onerror);
     JS_FreeValue(ctx, global);
 }
@@ -53,28 +60,37 @@ static string getJSErrorStr(JSContext *ctx, JSValueConst error) {
     bool is_error;
     is_error = JS_IsError(error);
     string jsException;
+    //JS_ToCString 对 Symbol 这类无法转成字符串的值返回 NULL，直接拼进 std::string 是未定义行为
     if (is_error) {
         tryToTriggerOnError(ctx, &error);
 
         JSValue message = JS_GetPropertyStr(ctx, error, "message");
         const char *msg_str = JS_ToCString(ctx, message);
-        jsException += msg_str;
-        JS_FreeCString(ctx, msg_str);
+        if (msg_str) {
+            jsException += msg_str;
+            JS_FreeCString(ctx, msg_str);
+        }
         JS_FreeValue(ctx, message);
 
         val = JS_GetPropertyStr(ctx, error, "stack");
         if (!JS_IsUndefined(val)) {
-            jsException += "\n";
-
             const char *stack_str = JS_ToCString(ctx, val);
-            jsException += stack_str;
-            JS_FreeCString(ctx, stack_str);
+            if (stack_str) {
+                jsException += "\n";
+                jsException += stack_str;
+                JS_FreeCString(ctx, stack_str);
+            }
         }
         JS_FreeValue(ctx, val);
     } else {
         const char *error_str = JS_ToCString(ctx, error);
-        jsException += error_str;
-        JS_FreeCString(ctx, error_str);
+        if (error_str) {
+            jsException += error_str;
+            JS_FreeCString(ctx, error_str);
+        } else {
+            JS_FreeValue(ctx, JS_GetException(ctx)); //转换失败会在 ctx 里留下异常，不能让它漂到下一步
+            jsException += "[unstringifiable exception]";
+        }
     }
     return jsException;
 }
@@ -93,6 +109,10 @@ static void throwJavaException(JNIEnv *env, const char *exceptionClass, const ch
     vsnprintf(msg, sizeof(msg), fmt, args);
     va_end (args);
     jclass e = env->FindClass(exceptionClass);
+    if (e == nullptr) { //FindClass 失败时 ThrowNew 会让 JVM 直接 abort
+        env->ExceptionClear();
+        return;
+    }
     env->ThrowNew(e, msg);
     env->DeleteLocalRef(e);
 }
@@ -103,10 +123,16 @@ static void throwJSException(JNIEnv *env, const char* msg) {
     }
 
     jclass e = env->FindClass("cn/net/zhijian/quickjs/QuickJSException");
+    if (e == nullptr) { //同上：类找不到时 NewObject/Throw 都会让 JVM 挂掉
+        env->ExceptionClear();
+        return;
+    }
     jmethodID init = env->GetMethodID(e, "<init>", "(Ljava/lang/String;Z)V");
     jstring ret = env->NewStringUTF(msg);
     auto t = (jthrowable)env->NewObject(e, init, ret, JNI_TRUE);
     env->Throw(t);
+    env->DeleteLocalRef(ret);
+    env->DeleteLocalRef(t);
     env->DeleteLocalRef(e);
 }
 
@@ -122,8 +148,10 @@ static void jsFuncCallbackFinalizer(JSRuntime *rt, JSValue val) {
     auto wrapper = reinterpret_cast<const QuickJSWrapper*>(JS_GetRuntimeOpaque(rt));
     if (wrapper) {
         int *callbackId = (int *)(JS_GetOpaque2(wrapper->context, val, js_func_callback_class_id));
-        wrapper->removeCallFunction(*callbackId);
-        delete callbackId;
+        if (callbackId) { //对象被塞过别的 opaque 时这里会是 NULL，直接解引用就是段错误
+            wrapper->removeCallFunction(*callbackId);
+            delete callbackId;
+        }
     }
 }
 
@@ -133,9 +161,12 @@ static JSClassDef js_func_callback_class = {
 };
 
 static JSValue jsFnCallback(JSContext *ctx, JSValueConst this_obj, int argc, JSValueConst *argv, int magic, JSValue *func_data) {
-    int callbackId = *((int *)JS_GetOpaque2(ctx, func_data[0], js_func_callback_class_id));
+    auto callbackId = (int *)JS_GetOpaque2(ctx, func_data[0], js_func_callback_class_id);
+    if (callbackId == nullptr) { //opaque 被覆盖过就是 NULL，解引用直接段错误
+        return JS_EXCEPTION;
+    }
     auto wrapper = reinterpret_cast<QuickJSWrapper*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
-    JSValue value = wrapper->jsFuncCall(callbackId, this_obj, argc, argv);
+    JSValue value = wrapper->jsFuncCall(*callbackId, this_obj, argc, argv);
     return value;
 }
 
@@ -221,15 +252,11 @@ static JSModuleDef *jsModuleLoaderFunc(JSContext *ctx, const char *module_name, 
         }
 
         m = (JSModuleDef*) JS_VALUE_GET_PTR(obj);
-        // 注意：这可能会释放模块？需要检查 quickjs 内部。
-        // 通常 JS_ResolveModule 后 obj 和模块关联，不能释放？这里需要参考 quickjs 示例。
-        // 安全做法是返回 obj 的指针，不释放。
-        // 实际上，JS_ResolveModule 不会转移所有权，我们需要返回模块对象。
-        // 但 obj 已经被 JS_FreeValue 释放，m 将成为悬空指针！
-        // 正确的做法：不释放 obj，而是返回 JS_VALUE_GET_PTR(obj)，后续由 JS_EvalFunction 等管理。
-        // 但这里因为我们已经释放了，所以会崩溃。需要重新设计。
-        // 建议：直接返回 (JSModuleDef*)JS_VALUE_GET_PTR(obj)，不释放 obj。
-        //JS_FreeValue(ctx, obj); 
+        // 模块 def 已被 JS_ResolveModule 注册进 rt->module_list（独立持引用），free 这个
+        // module 类型的 JSValue 不会让 m 悬空；不 free 反而会每次加载泄漏一个值。
+        // 参考 quickjs-ng：qjs.c 的 load_standalone_module 与 quickjs-libc 的 js_module_load
+        // 都是拿到 m 后立刻 JS_FreeValue(obj)。
+        JS_FreeValue(ctx, obj);
     } else {
         jmethodID getStringCode = env->GetMethodID(wrapper->moduleLoaderClass, "getStringCode", "(Ljava/lang/String;)Ljava/lang/String;");
         jobject result = env->CallObjectMethod(moduleLoader, getStringCode, utf8Name);
@@ -250,8 +277,8 @@ static JSModuleDef *jsModuleLoaderFunc(JSContext *ctx, const char *module_name, 
             goto END_LOADER;
         }
         m = (JSModuleDef*) JS_VALUE_GET_PTR(func_val);
-        // 注意：这里不能释放 func_val，因为模块定义需要保留
-        // JS_FreeValue(ctx, func_val);  // 绝对不能释放！
+        // 同上：m 由 runtime 的模块表持有，free 这个 JSValue 安全，不 free 会泄漏。
+        JS_FreeValue(ctx, func_val);
     }
 END_LOADER:
     env->DeleteLocalRef(utf8Name);
@@ -261,13 +288,13 @@ END_LOADER:
 
 static bool throwIfUnhandledRejections(QuickJSWrapper *wrapper, JSContext *ctx) {
     string error;
-    while (!wrapper->unhandledRejections.empty()) {
-        JSValueConst reason = wrapper->unhandledRejections.front();
-        error += getJSErrorStr(ctx, reason);
+    for (auto &rejection : wrapper->unhandledRejections) {
+        error += getJSErrorStr(ctx, rejection.reason);
         error += "\n";
-        JS_FreeValue(ctx, reason);
-        wrapper->unhandledRejections.pop();
+        JS_FreeValue(ctx, rejection.promise);
+        JS_FreeValue(ctx, rejection.reason);
     }
+    wrapper->unhandledRejections.clear();
 
     bool is_error = !error.empty();
     if (is_error) {
@@ -320,24 +347,37 @@ static JSValue waitPromise(JNIEnv* env, JSRuntime *rt, JSContext *context, JSVal
     
     if (state == JS_PROMISE_REJECTED) {
         JSValue reason = JS_PromiseResult(context, value);
+        //JS_Throw 的入参是 JSValue，按 quickjs.h 的所有权约定它已经消费掉 reason，
+        //所以这里不能再 JS_FreeValue(reason)，否则引用计数被多减一次，
+        //ASan 实测会在 JS_FreeRuntime 的 gc_decref_child 里 heap-use-after-free。
         JS_Throw(context, reason);
-        JS_FreeValue(context, reason);
         JS_FreeValue(context, value);
+        //必须把刚设置的 JS 异常转成 Java 异常，否则调用方只拿到 null，
+        //而且这个残留异常还会污染下一次求值。
+        throwJSException(env, context);
+        return JS_NULL;
     }
-    
+
+    //state == JS_PROMISE_PENDING：没有 job 能再推进它，不释放就把 promise 永久泄漏了
+    JS_FreeValue(context, value);
     return JS_NULL;
 }
 
 static void promiseRejectionTracker(JSContext *ctx, JSValueConst promise,
                                     JSValueConst reason, bool is_handled, void *opaque) {
-    auto unhandledRejections = static_cast<queue<JSValue> *>(opaque);
+    auto rejections = static_cast<vector<QuickJSWrapper::Rejection> *>(opaque);
     if (!is_handled) {
-        unhandledRejections->push(JS_DupValue(ctx, reason));
-    } else {
-        if (!unhandledRejections->empty()) {
-            JSValueConst rej = unhandledRejections->front();
-            JS_FreeValue(ctx, rej);
-            unhandledRejections->pop();
+        rejections->push_back({JS_DupValue(ctx, promise), JS_DupValue(ctx, reason)});
+        return;
+    }
+
+    //按 promise 认领：队列里存的是别的 promise 时，不能把它的 reason 当成"已被处理"给还掉
+    for (auto it = rejections->begin(); it != rejections->end(); ++it) {
+        if (JS_VALUE_GET_PTR(it->promise) == JS_VALUE_GET_PTR(promise)) {
+            JS_FreeValue(ctx, it->promise);
+            JS_FreeValue(ctx, it->reason);
+            rejections->erase(it);
+            return;
         }
     }
 }
@@ -375,6 +415,8 @@ QuickJSWrapper::QuickJSWrapper(JNIEnv *env, jobject thiz, JSRuntime *rt) {
     moduleLoaderClass = (jclass)(env->NewGlobalRef(env->FindClass("cn/net/zhijian/quickjs/ModuleLoader")));
     creatorClass = (jclass)(env->NewGlobalRef(env->FindClass("cn/net/zhijian/quickjs/JSObjectCreator")));
     byteArrayClass = (jclass) env->NewGlobalRef(env->FindClass("[B"));
+    //构造失败提前返回时析构函数仍会跑到，未初始化的引用会在 DeleteGlobalRef 时炸掉
+    utf8Charset = nullptr;
 
     booleanValueOf = env->GetStaticMethodID(booleanClass, "valueOf", "(Z)Ljava/lang/Boolean;");
     integerValueOf = env->GetStaticMethodID(integerClass, "valueOf", "(I)Ljava/lang/Integer;");
@@ -389,7 +431,26 @@ QuickJSWrapper::QuickJSWrapper(JNIEnv *env, jobject thiz, JSRuntime *rt) {
 
     callFunctionBackM = env->GetMethodID(quickjsContextClass, "callFunctionBack", "(I[Ljava/lang/Object;)Ljava/lang/Object;");
     removeCallFunctionM = env->GetMethodID(quickjsContextClass, "removeCallFunction", "(I)V");
-    callFunctionHashCodeM = env->GetMethodID(objectClass, "hashCode", "()I");
+    registerCallbackM = env->GetMethodID(quickjsContextClass, "registerCallback",
+                                         "(Lcn/net/zhijian/quickjs/JSCallFunction;)I");
+    //老的 Java 类没有 registerCallback，回调会全部打到错误的对象上；这里宁可直接报错也不要静默错乱
+    if (registerCallbackM == nullptr) {
+        env->ExceptionClear();
+        throwJavaException(env, "java/lang/IllegalStateException",
+                           "QuickJSContext.registerCallback is missing, the Java classes and the native library are from different builds");
+        return;
+    }
+
+    stringInitBytesCharsetM = env->GetMethodID(stringClass, "<init>", "([BLjava/nio/charset/Charset;)V");
+    jclass standardCharsetsClass = env->FindClass("java/nio/charset/StandardCharsets");
+    if (standardCharsetsClass) {
+        jfieldID utf8Field = env->GetStaticFieldID(standardCharsetsClass, "UTF_8", "Ljava/nio/charset/Charset;");
+        jobject utf8 = env->GetStaticObjectField(standardCharsetsClass, utf8Field);
+        utf8Charset = env->NewGlobalRef(utf8);
+        env->DeleteLocalRef(utf8);
+        env->DeleteLocalRef(standardCharsetsClass);
+    }
+
     creatorM = env->GetMethodID(quickjsContextClass, "getCreator", "()Lcn/net/zhijian/quickjs/JSObjectCreator;");
     newObjectM = env->GetMethodID(creatorClass, "newObject",
                                      "(Lcn/net/zhijian/quickjs/QuickJSContext;J)Lcn/net/zhijian/quickjs/JSObject;");
@@ -400,6 +461,13 @@ QuickJSWrapper::QuickJSWrapper(JNIEnv *env, jobject thiz, JSRuntime *rt) {
 }
 
 QuickJSWrapper::~QuickJSWrapper() {
+    //关闭前把还没上报的 rejection 释放掉，不然这些引用会跟着 runtime 一起漏
+    for (auto &rejection : unhandledRejections) {
+        JS_FreeValue(context, rejection.promise);
+        JS_FreeValue(context, rejection.reason);
+    }
+    unhandledRejections.clear();
+
     JS_FreeValue(context, ownPropertyNames);
     JS_FreeContext(context);
     JS_FreeRuntime(runtime);
@@ -419,6 +487,9 @@ QuickJSWrapper::~QuickJSWrapper() {
     jniEnv->DeleteGlobalRef(quickjsContextClass);
     jniEnv->DeleteGlobalRef(creatorClass);
     jniEnv->DeleteGlobalRef(byteArrayClass);
+    if (utf8Charset) {
+    		jniEnv->DeleteGlobalRef(utf8Charset);
+    }
 }
 
 jobject QuickJSWrapper::toJavaObject(JNIEnv *env, jobject thiz, JSValueConst this_obj, JSValueConst value) const{
@@ -429,8 +500,20 @@ jobject QuickJSWrapper::toJavaObject(JNIEnv *env, jobject thiz, JSValueConst thi
             break;
         }
 
-        case JS_TAG_STRING: {
+        case JS_TAG_STRING:
+        case JS_TAG_STRING_ROPE: {
+            //0.17 起 'a'+'b' 这类拼接超过 JS_STRING_ROPE_SHORT_LEN(512) 会得到 rope，
+            //它和 JS_TAG_STRING 是不同的 tag；漏掉 rope 会让长字符串直接返回 null。
+            //toJavaString 内部会释放 value（含 rope）。
             result = toJavaString(env, value);
+            break;
+        }
+
+        case JS_TAG_SHORT_BIG_INT: {
+            //0.17 里 int32 范围内的 BigInt 是立即数 tag，不在此列出会落到 default 变成 null
+            jvalue v;
+            v.j = static_cast<jlong>(JS_VALUE_GET_SHORT_BIG_INT(value));
+            result = env->CallStaticObjectMethodA(longClass, longValueOf, &v);
             break;
         }
 
@@ -451,6 +534,7 @@ jobject QuickJSWrapper::toJavaObject(JNIEnv *env, jobject thiz, JSValueConst thi
         case JS_TAG_BIG_INT: {
             int64_t e;
             JS_ToBigInt64(context, &e, value);
+            JS_FreeValue(context, value); //堆上的 JSBigInt 有引用计数，不释放会永久泄漏（实测 2 万次求值多占用 2 万个分配块）
             jvalue v;
             v.j = e;
             result = env->CallStaticObjectMethodA(longClass, longValueOf, &v);
@@ -460,7 +544,9 @@ jobject QuickJSWrapper::toJavaObject(JNIEnv *env, jobject thiz, JSValueConst thi
         case JS_TAG_FLOAT64: {
             jvalue v;
             double d = JS_VALUE_GET_FLOAT64(value);
-            bool isInteger = floor(d) == d;
+            //Infinity 和超出 long 范围的值不能强转，否则是有符号溢出 UB（实测 1/0 会变成 Long.MIN_VALUE）
+            bool isInteger = std::isfinite(d) && floor(d) == d
+                    && d >= -9223372036854775808.0 && d < 9223372036854775808.0;
             if (isInteger) {
                 v.j = static_cast<jlong>(d);
                 result = env->CallStaticObjectMethodA(longClass, longValueOf, &v);
@@ -482,8 +568,29 @@ jobject QuickJSWrapper::toJavaObject(JNIEnv *env, jobject thiz, JSValueConst thi
             } else if (JS_IsArrayBuffer(value)) {
                 size_t byteLength = 0;
                 uint8_t *buffer = JS_GetArrayBuffer(context, &byteLength, value);
-                jbyteArray byteArray = env->NewByteArray(byteLength);
+                if (buffer == nullptr) {
+                    //0.17 起 JS 侧 ab.transfer() 会把 buffer 变成 detached，
+                    //这里 JS_GetArrayBuffer 已经留下挂起的 JS 异常，必须转成 Java 异常再返回，
+                    //否则调用方拿到一个空数组，异常会漂到后面某次无关的 JNI 调用上
+                    JS_FreeValue(context, value);
+                    throwJSException(env, context);
+                    return nullptr;
+                }
+                if (byteLength > (size_t)INT32_MAX) {
+                    JS_FreeValue(context, value);
+                    throwJavaException(env, "java/lang/IllegalArgumentException",
+                                       "ArrayBuffer of %zu bytes is larger than the maximum jbyteArray size", byteLength);
+                    return nullptr;
+                }
+                jbyteArray byteArray = env->NewByteArray((jsize)byteLength);
                 void *elementsPtr = env->GetPrimitiveArrayCritical(byteArray, nullptr);
+                if (elementsPtr == nullptr) {
+                    JS_FreeValue(context, value);
+                    env->DeleteLocalRef(byteArray);
+                    throwJavaException(env, "java/lang/OutOfMemoryError",
+                                       "Failed to pin a %zu bytes byte array", byteLength);
+                    return nullptr;
+                }
                 jbyte *elements = reinterpret_cast<jbyte *>(elementsPtr);
                 memcpy(elements, buffer, byteLength);
                 result = byteArray;
@@ -497,6 +604,10 @@ jobject QuickJSWrapper::toJavaObject(JNIEnv *env, jobject thiz, JSValueConst thi
         }
 
         default:
+            //到这里说明这个值归本函数所有但没人接手：SYMBOL/MODULE/FUNCTION_BYTECODE 等
+            //都是带引用计数的，不释放就永久泄漏（实测 Symbol() 2 万次泄漏 2 万个块）。
+            //立即数（NULL/UNDEFINED/INT/...）走 JS_FreeValue 是空操作，可以安全统一释放。
+            JS_FreeValue(context, value);
             result = nullptr;
             break;
     }
@@ -532,7 +643,9 @@ jobject QuickJSWrapper::getGlobalObject(JNIEnv *env, jobject thiz) const {
     auto value_ptr = reinterpret_cast<jlong>(JS_VALUE_GET_PTR(value));
     jobject result = env->CallObjectMethod(env->CallObjectMethod(thiz, creatorM), newObjectM, thiz, value_ptr);
 
-    JS_FreeValue(context, value);
+    //JS_GetGlobalObject 拿到的那次 +1 要交给 Java 包装对象持有（包装构造时 refCount 记 1，
+    //release() 会对称地 JS_FreeValue）。这里如果提前还掉，Java 侧再 release 就是多减一次：
+    //全局对象引用计数直接下溢，实测 ASan 版停在 gc_decref_child 断言，Release 版随后 SIGSEGV。
     return result;
 }
 
@@ -559,6 +672,11 @@ jobject QuickJSWrapper::call(JNIEnv *env, jobject thiz, jlong func, jlong this_o
         jobject arg = env->GetObjectArrayElement(args, numArgs);
         auto jsArg = toJSValue(env, thiz, arg);
         if (JS_IsException(jsArg)) {
+            env->DeleteLocalRef(arg);
+            //前面已经转换出来的参数是本函数持有的引用，中途返回时不还掉就漏了
+            for (JSValue argument : freeArguments) {
+                JS_FreeValue(context, argument);
+            }
             return nullptr;
         }
 
@@ -621,9 +739,17 @@ jint QuickJSWrapper::length(JNIEnv *env, jlong value) const {
         return -1;
     }
 
-    JS_FreeValue(context, length);
+    //原代码先 JS_FreeValue 再 JS_VALUE_GET_INT，读的是已释放的值；
+    //而且长度不是 int32 立即数时（比如 getter 返回字符串或大数）取出来的就是垃圾。
+    int32_t len = 0;
+    if (JS_ToInt32(context, &len, length)) {
+        JS_FreeValue(context, length);
+        throwJSException(env, context);
+        return -1;
+    }
 
-    return JS_VALUE_GET_INT(length);
+    JS_FreeValue(context, length);
+    return len;
 }
 
 jobject QuickJSWrapper::get(JNIEnv *env, jobject thiz, jlong value, jint index) {
@@ -634,20 +760,32 @@ jobject QuickJSWrapper::get(JNIEnv *env, jobject thiz, jlong value, jint index) 
 }
 
 void QuickJSWrapper::set(JNIEnv *env, jobject thiz, jlong this_obj, jobject value, jint index) {
-    JSValue jsObj = JS_MKPTR(JS_TAG_OBJECT, reinterpret_cast<void *>(this_obj));
     JSValue child = toJSValue(env, thiz, value);
-    if (JS_IsString(child)) {
-        // JSString 类型不需要 JS_DupValue
-        JS_SetPropertyUint32(context, jsObj, index, child);
-    } else {
-        JS_SetPropertyUint32(context, jsObj, index, JS_DupValue(context, child));
+    if (env->ExceptionCheck() || JS_IsException(child)) {
+        JS_FreeValue(context, child);
+        return; //类型不支持时 toJSValue 已经抛了 Java 异常，不能把 JS_EXCEPTION 写进数组
     }
+
+    JSValue jsObj = JS_MKPTR(JS_TAG_OBJECT, reinterpret_cast<void *>(this_obj));
+    //toJSValue 对 JSObject 只借用不计数，其它类型（String/ArrayBuffer/CFunction/BigInt）都是自带一个引用；
+    //JS_SetPropertyUint32 会消费传入的值，所以只给借用的那一种补一次 dup。
+    //之前对所有非字符串都先 dup，多出来的那个引用没人还，ArrayBuffer 和回调每 set 一次泄漏一块。
+    if (env->IsInstanceOf(value, jsObjectClass)) {
+        JS_DupValue(context, child);
+    }
+    JS_SetPropertyUint32(context, jsObj, index, child);
 }
 
 void
 QuickJSWrapper::setProperty(JNIEnv *env, jobject thiz, jlong this_obj, jstring name, jobject value) const {
     const char* propName = env->GetStringUTFChars(name, JNI_FALSE);
     JSValue propValue = toJSValue(env, thiz, value);
+    if (env->ExceptionCheck() || JS_IsException(propValue)) {
+        //不支持的类型时 toJSValue 已经抛了 Java 异常，不能把 JS_EXCEPTION 写进对象
+        JS_FreeValue(context, propValue);
+        env->ReleaseStringUTFChars(name, propName);
+        return;
+    }
     if(env->IsInstanceOf(value, jsObjectClass)) {
         // 这里需要手动增加引用计数，不然 QuickJS 垃圾回收会报 assertion "p->ref_count > 0" 的错误。
         JS_DupValue(context, propValue);
@@ -668,6 +806,33 @@ QuickJSWrapper::setProperty(JNIEnv *env, jobject thiz, jlong this_obj, jstring n
     env->ReleaseStringUTFChars(name, propName);
 }
 
+//把挂起的 Java 异常换成 JS 异常。JNI 规定异常挂起时绝大多数后续调用行为未定义，
+//而回调返回后 quickjs 还要继续展开 JS 栈（会触发 finalizer、可能再调 JNI），
+//所以必须就地清掉 Java 异常，改成一个内容一致的 JS 异常往上抛。
+static void throwJsErrorFromJavaException(JSContext *ctx, JNIEnv *env) {
+    char message[512] = "java exception";
+    jthrowable exception = env->ExceptionOccurred();
+    if (exception) {
+        env->ExceptionClear();
+        jclass throwableClass = env->FindClass("java/lang/Throwable");
+        jmethodID toStringM = throwableClass ? env->GetMethodID(throwableClass, "toString", "()Ljava/lang/String;") : nullptr;
+        jstring text = toStringM ? (jstring) env->CallObjectMethod(exception, toStringM) : nullptr;
+        if (text) {
+            const char *chars = env->GetStringUTFChars(text, nullptr);
+            if (chars) {
+                snprintf(message, sizeof(message), "%s", chars);
+                env->ReleaseStringUTFChars(text, chars);
+            }
+            env->DeleteLocalRef(text);
+        }
+        if (throwableClass) env->DeleteLocalRef(throwableClass);
+        env->DeleteLocalRef(exception);
+    } else {
+        env->ExceptionClear();
+    }
+    JS_ThrowInternalError(ctx, "%s", message);
+}
+
 JSValue QuickJSWrapper::jsFuncCall(int callback_id, JSValueConst this_val, int argc, JSValueConst *argv){
     if (jniEnv->ExceptionCheck()) {
         return JS_EXCEPTION;
@@ -685,6 +850,14 @@ JSValue QuickJSWrapper::jsFuncCall(int callback_id, JSValueConst this_val, int a
     jobject result = jniEnv->CallObjectMethod(jniThiz, callFunctionBackM, callback_id, javaArgs);
 
     jniEnv->DeleteLocalRef(javaArgs);
+
+    //Java 回调里抛异常时 CallObjectMethod 返回 null 且异常挂起；
+    //当作 null 继续跑，异常就会漂到后面某次无关的 JNI 调用上，JS 侧的 try/catch 也抓不到。
+    if (jniEnv->ExceptionCheck()) {
+        jniEnv->DeleteLocalRef(result);
+        throwJsErrorFromJavaException(context, jniEnv);
+        return JS_EXCEPTION;
+    }
 
     JSValue jsValue = toJSValue(jniEnv, jniThiz, result);
 
@@ -738,7 +911,10 @@ JSValue QuickJSWrapper::toJSValue(JNIEnv *env, jobject thiz, jobject value) cons
         // JS_NewCFunctionData 有 dupValue obj，这里需要对 obj 计数减一，保持计数平衡
         JS_FreeValue(context, obj);
 
-        int *callbackId = new int(jniEnv->CallIntMethod(value, callFunctionHashCodeM));
+        //回调标识由 Java 侧的 registerCallback 分配。
+        //这里不能再用 value.hashCode()：两个 JSCallFunction 的 hashCode 相同时，
+        //Java 的 callFunctionMap 只会留下后注册的那个，f1() 会静默跑到 f2 的实现上。
+        int *callbackId = new int(env->CallIntMethod(thiz, registerCallbackM, value));
         JS_SetOpaque(obj, callbackId);
     } else {
         jclass classType = env->GetObjectClass(value);
@@ -761,16 +937,6 @@ void QuickJSWrapper::freeValue(jlong value) const {
 void QuickJSWrapper::dupValue(jlong value) const {
     JSValue jsObj = JS_MKPTR(JS_TAG_OBJECT, reinterpret_cast<void *>(value));
     JS_DupValue(context, jsObj);
-}
-
-/**
- * @deprecated
- * See {@link freeValue(String)}
- * @param value
- */
-void QuickJSWrapper::freeDupValue(jlong value) const {
-    JSValue jsObj = JS_MKPTR(JS_TAG_OBJECT, reinterpret_cast<void *>(value));
-    JS_FreeValue(context, jsObj);
 }
 
 jobject QuickJSWrapper::parseJSON(JNIEnv *env, jobject thiz, jstring json) {
@@ -834,7 +1000,8 @@ jobject QuickJSWrapper::execute(JNIEnv *env, jobject thiz, jbyteArray bytecode) 
     }
 
     if (JS_ResolveModule(context, obj)) {
-        // TODO throwJsExceptionFmt(env, this, "Failed to resolve JS module");
+        JS_FreeValue(context, obj); //obj 还没交给 JS_EvalFunction，这条路不走它就得自己还
+        throwJSException(env, context);
         return nullptr;
     }
 
@@ -922,26 +1089,27 @@ jobject QuickJSWrapper::getOwnPropertyNames(JNIEnv *env, jobject thiz, jlong obj
 
 jstring QuickJSWrapper::toJavaString(JNIEnv *env, JSValue value) const {
     jstring result;
-#ifdef IS_ANDROID
-    const char* string = JS_ToCString(context, value);
-    result = env->NewStringUTF(string);
-    JS_FreeCString(context, string);
-#else
-    // 这里需要注意，JVM 平台下 NewStringUTF 方法对部分 unicode 的转换有问题，会出现乱码，换了另一种方式解决。
+    //这里以前在 Android 分支走 NewStringUTF(JS_ToCString(...))，实测（用 -DIS_ANDROID=TRUE 编一份跑在 JVM 上）：
+    //  "中文🎉éè" 变成 5 个字符的乱码，"a\u0000b" 被截成 "a" —— NewStringUTF 认的是 modified UTF-8，
+    //  而 JS_ToCString 输出真正的 UTF-8（4 字节序列和裸 0x00 都不兼容）。所以三个平台统一走字节数组。
+    //new String(byte[]) 用的是平台默认字符集，file.encoding=GBK 的 JVM 上非 ASCII 也会乱码
+    //（实测 "中文测试，éè" 会变成 10 个乱码字符），所以必须显式指定 UTF-8。
     const char *str;
-    size_t len;
+    size_t len = 0;
     str = JS_ToCStringLen(context, &len, value);
+    if (str == nullptr) { //分配失败时 JS_ToCStringLen 返回 NULL 并留下挂起的 JS 异常
+        JS_FreeValue(context, value);
+        throwJSException(env, context);
+        return nullptr;
+    }
 
-    jbyteArray jba = env->NewByteArray(len);
-    env->SetByteArrayRegion(jba, 0, len, reinterpret_cast<const jbyte *>(str));
+    jbyteArray jba = env->NewByteArray((jsize) len);
+    env->SetByteArrayRegion(jba, 0, (jsize) len, reinterpret_cast<const jbyte *>(str));
 
-    result = static_cast<jstring>(env->NewObject(stringClass,
-                                                 env->GetMethodID(stringClass, "<init>", "([B)V"),
-                                                 jba));
+    result = static_cast<jstring>(env->NewObject(stringClass, stringInitBytesCharsetM, jba, utf8Charset));
 
     JS_FreeCString(context, str);
     env->DeleteLocalRef(jba);
-#endif
     // JSString 类型的 JSValue 需要手动释放掉，不然会泄漏
     JS_FreeValue(context, value);
 

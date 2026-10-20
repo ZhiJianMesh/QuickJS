@@ -37,8 +37,16 @@ public class LoggerTest {
     @Test
     public void testLoggerFormat() {
         StringBuilder buf = new StringBuilder(1000);
+        QuickJSLogger previous = QuickJSLogger.instance();
         QuickJSLogger.setLogger(new TestLogger(buf));
-        
+        try {
+            testCases(buf);
+        } finally {
+            QuickJSLogger.setLogger(previous); //全局 logger 不能留給其他测试
+        }
+    }
+
+    private void testCases(StringBuilder buf) {
         QuickJSLogger.instance().debug("test logger"); //没有参数
         String s = buf.toString();
         assertEquals(s, "test logger");
@@ -67,6 +75,27 @@ public class LoggerTest {
         QuickJSLogger.instance().error("a {} b,bool:{},int:{}", '&', false, 89, new Exception("test"));
         s = buf.toString();
         assertTrue(s.startsWith("a & b,bool:false,int:89"));
+        buf.setLength(0);
+
+        //没有占位符但带参数：不能抛异常，也不能把尾部异常丢掉
+        QuickJSLogger.instance().error("no placeholder", new Exception("boom"));
+        s = buf.toString();
+        assertTrue(s.startsWith("no placeholder"), s);
+        assertTrue(s.contains("boom"), s);
+        assertTrue(s.contains("LoggerTest"), s); //堆栈要打得出来
+        buf.setLength(0);
+
+        //占位符数量刚好等于参数数量时，末尾异常按 SLF4J 约定不再填占位符以外还要打堆栈
+        QuickJSLogger.instance().error("{} failed", "step", new IllegalStateException("why"));
+        s = buf.toString();
+        assertTrue(s.startsWith("step failed"), s);
+        assertTrue(s.contains("why"), s);
+        buf.setLength(0);
+
+        //多余参数没有异常时按原样保留占位符
+        QuickJSLogger.instance().debug("{} and {}", 1);
+        s = buf.toString();
+        assertEquals("1 and {}", s);
         buf.setLength(0);
     }
 }

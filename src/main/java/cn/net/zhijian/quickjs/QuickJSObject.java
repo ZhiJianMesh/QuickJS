@@ -40,7 +40,20 @@ public class QuickJSObject implements JSObject {
     @Override
     public boolean containsProperty(String name) {
         checkRefCountIsZero();
-        return context.getProperty(this, name) != null;
+        Object value = context.getProperty(this, name);
+        freeIfNotReturned(value); //属性值只是用来判断存在性，不释放会一直滞留在 context 的 objectRecords 里
+        return value != null;
+    }
+
+    /**
+     * 取到的属性值不返回给调用方时（只判断类型、只做一次转换），需要释放它。
+     * 不释放的话 Java 侧包装对象会留在 context 的 objectRecords 中，
+     * JS 侧引用计数也降不下来，长期持有 context 的场景会一直增长。
+     */
+    private void freeIfNotReturned(Object value) {
+        if (value instanceof JSObject) {
+            ((JSObject) value).release();
+        }
     }
 
     @Override
@@ -146,114 +159,113 @@ public class QuickJSObject implements JSObject {
         if(value instanceof String) {
             return (String) value;
         }
-        return value.toString();
+        String s = value.toString();
+        freeIfNotReturned(value);
+        return s;
     }
 
     @Override
     public Integer getInteger(String name) {
         Object value = getProperty(name);
-        if (value == null) {
-            return null;
-        }
-
+        Integer ret = null;
         if (value instanceof Number) {
-            return ((Number) value).intValue();
-        }
-
-        if (value instanceof String) {
+            ret = ((Number) value).intValue();
+        } else if (value instanceof String) {
             try {
-                return Integer.parseInt((String) value);
-            } catch (Exception e) {
+                ret = Integer.parseInt((String) value);
+            } catch (NumberFormatException e) {
             }
         }
-
-        return null;
+        freeIfNotReturned(value);
+        return ret;
     }
 
     @Override
     public boolean getBoolean(String name) {
         Object value = getProperty(name);
-        if(value == null) {
-            return false;
-        }
+        boolean ret = false;
         if(value instanceof Boolean) {
-            return (Boolean) value;
-        }
-        
-        if(value instanceof String) {
+            ret = (Boolean) value;
+        } else if(value instanceof String) {
             String s = ((String)value).toLowerCase();
-            return s.equals("true") || s.equals("1");
+            ret = s.equals("true") || s.equals("1");
+        } else if(value instanceof Number) {
+            ret = (((Number) value).intValue() != 0);
         }
-        
-        if(value instanceof Number) {
-            return (((Number) value).intValue() != 0);
-        }
-        return false;
+        freeIfNotReturned(value);
+        return ret;
     }
 
     @Override
     public Double getDouble(String name) {
         Object value = getProperty(name);
-        if(value == null) {
-            return null;
-        }
-
+        Double ret = null;
         if (value instanceof Number) {
-            return ((Number) value).doubleValue();
-        }
-
-        if (value instanceof String) {
+            ret = ((Number) value).doubleValue();
+        } else if (value instanceof String) {
             try {
-                return Double.parseDouble((String) value);
-            } catch (Exception e) {
+                ret = Double.parseDouble((String) value);
+            } catch (NumberFormatException e) {
             }
         }
-        
-        return null;
+        freeIfNotReturned(value);
+        return ret;
     }
 
     @Override
     public Long getLong(String name) {
         Object value = getProperty(name);
-        if (value == null) {
-            return null;
-        }
-
+        Long ret = null;
         if (value instanceof Number) {
-            return ((Number) value).longValue();
-        }
-
-        if (value instanceof String) {
+            ret = ((Number) value).longValue();
+        } else if (value instanceof String) {
             try {
-                return Long.parseLong((String) value);
-            } catch (Exception e) {
+                ret = Long.parseLong((String) value);
+            } catch (NumberFormatException e) {
             }
         }
-        return null;
+        freeIfNotReturned(value);
+        return ret;
     }
 
     @Override
     public byte[] getBytes(String name) {
         Object value = getProperty(name);
-        return value instanceof byte[] ? (byte[]) value : null;
+        if (value instanceof byte[]) {
+            return (byte[]) value;
+        }
+        freeIfNotReturned(value);
+        return null;
     }
 
     @Override
     public JSObject getJSObject(String name) {
         Object value = getProperty(name);
-        return value instanceof JSObject ? (JSObject) value : null;
+        if (value instanceof JSObject) {
+            return (JSObject) value;
+        }
+        freeIfNotReturned(value);
+        return null;
     }
 
     @Override
     public JSFunction getJSFunction(String name) {
         Object value = getProperty(name);
-        return value instanceof JSFunction ? (JSFunction) value : null;
+        if (value instanceof JSFunction) {
+            return (JSFunction) value;
+        }
+        freeIfNotReturned(value);
+        return null;
     }
 
     @Override
     public JSArray getJSArray(String name) {
         Object value = getProperty(name);
-        return value instanceof JSArray ? (JSArray) value : null;
+        if (value instanceof JSArray) {
+            return (JSArray) value;
+        }
+        freeIfNotReturned(value);
+        return null;
     }
 
     @Override
@@ -348,6 +360,9 @@ public class QuickJSObject implements JSObject {
                     } else if (map instanceof ArrayList){
                         ((ArrayList<Object>) map).add(refValue);
                     }
+                    //getProperty/get 返回的是自带一次计数的包装，这里不还不是引用泄漏：
+                    //命中环或共享对象时 map 里放的是已建好的 Java map，跟这个包装对象再无关系。
+                    ((JSObject) value).release();
                     continue;
                 }
             }
@@ -422,10 +437,20 @@ public class QuickJSObject implements JSObject {
     @Override
     public String toString() {
         checkRefCountIsZero();
+        //别直接 toString.call()：ES 模块命名空间对象、Object.create(null) 造出来的对象
+        //[[Prototype]] 为 null，取不到 toString，getJSFunction 返回 null 就是 NPE，
+        //调用方只是想打印一下就崩了。另外 call 抛异常时原来的 release() 会被跳过，
+        //包装对象就地泄漏，这里用 finally 兜住。
         JSFunction toString = getJSFunction("toString");
-        String ret = (String) toString.call();
-        toString.release();
-        return ret;
+        if (toString == null) {
+            return getClass().getSimpleName() + "@" + Long.toHexString(pointer);
+        }
+        try {
+            Object ret = toString.call();
+            return ret == null ? "null" : String.valueOf(ret);
+        } finally {
+            toString.release();
+        }
     }
 
     @Override

@@ -22,12 +22,18 @@ private:
     JSValue toJSValue(JNIEnv *env, jobject thiz, jobject value) const;
 
 public:
+    //rejection 要按 promise 身份配对，只存 reason 的话"已处理"会摘错队列里第一条的 reason
+    struct Rejection {
+        JSValue promise;
+        JSValue reason;
+    };
+
     JNIEnv *jniEnv;
     jobject jniThiz;
     JSRuntime *runtime;
     JSContext *context;
 
-    queue<JSValueConst> unhandledRejections;
+    vector<Rejection> unhandledRejections;
 
     jclass objectClass;
     jclass booleanClass;
@@ -58,7 +64,11 @@ public:
 
     jmethodID callFunctionBackM;
     jmethodID removeCallFunctionM;
-    jmethodID callFunctionHashCodeM;
+    jmethodID registerCallbackM;
+    //JS 侧固定是 UTF-8，new String(byte[]) 用的是平台默认字符集，
+    //在 file.encoding=GBK 的 JVM 上（zh-CN Windows + JDK<=17）非 ASCII 字符串会变乱码
+    jobject utf8Charset;
+    jmethodID stringInitBytesCharsetM;
     jmethodID creatorM;
     jmethodID newObjectM;
     jmethodID newArrayM;
@@ -80,7 +90,6 @@ public:
     void removeCallFunction(int callback_id) const;
     void freeValue(jlong) const;
     void dupValue(jlong) const;
-    void freeDupValue(jlong) const;
     jobject parseJSON(JNIEnv*, jobject, jstring);
 
     // JS --> bytecode

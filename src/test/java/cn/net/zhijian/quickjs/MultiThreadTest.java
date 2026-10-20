@@ -78,7 +78,7 @@ public class MultiThreadTest {
             });
         }
         long end = System.currentTimeMillis();
-        long interval = end - start;
+        long interval = end > start ? end - start : 1; //任务异步执行，提交可能不到一毫秒就完了
         
         System.out.println("testMultiThreadWithExclusiveContext,use time:" + interval + ",speed:" + (1000L * T * N) / interval);
     
@@ -96,6 +96,7 @@ public class MultiThreadTest {
         int N = Runtime.getRuntime().availableProcessors() * 2;
         AtomicInteger c = new AtomicInteger(0);
         //多线程最佳解决方案，在线程的开始处创建context，销毁时关闭context
+        @SuppressWarnings("resource")
         ExecutorService pool = new ThreadPoolExecutor(1, N / 2, 200L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), new ThreadFactory() {
             private final AtomicInteger threadNumber = new AtomicInteger(1);
             @Override
@@ -134,7 +135,7 @@ public class MultiThreadTest {
             });
         }
         long end = System.currentTimeMillis();
-        long interval = end - start;
+        long interval = end > start ? end - start : 1; //任务异步执行，提交可能不到一毫秒就完了
         
         System.out.println("testMultiThreadWithThreadLocal,use time:" + interval + ",speed:" + (1000L * N) / interval);
     
@@ -146,7 +147,11 @@ public class MultiThreadTest {
         assertEquals(N, c.get());
         Thread.sleep(1000);
         System.out.println("Wait 2 seconds in testMultiThreadWithThreadLocal");
-        pool.close();
+        //ExecutorService.close() 是 JDK 19 才有的方法，本模块兼容 11
+        pool.shutdown();
+        if (!pool.awaitTermination(10, TimeUnit.SECONDS)) {
+            pool.shutdownNow();
+        }
     }
     
     @Test

@@ -1,7 +1,36 @@
 #include <jni.h>
 #include <string>
+#include <cerrno>
+#include <cstring>
 #include "quickjs_wrapper.h"
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
+
+// 当前线程栈的总大小，取不到就返回 0 表示"不知道"。
+static size_t current_thread_stack_size() {
+#if defined(_WIN32)
+    //mingw 只前置声明了 struct _TEB，NT_TIB 是 TEB 的头一个成员，按 NT_TIB 取就够
+    PNT_TIB tib = (PNT_TIB) NtCurrentTeb();
+    if (tib == nullptr) {
+        return 0;
+    }
+    return (size_t) ((char *) tib->StackBase - (char *) tib->StackLimit);
+#else
+    pthread_attr_t attr;
+    void *base = nullptr;
+    size_t size = 0;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        pthread_attr_getstack(&attr, &base, &size);
+        pthread_attr_destroy(&attr);
+    }
+    return size;
+#endif
+}
 
 extern "C"
 JNIEXPORT void JNICALL
@@ -124,14 +153,6 @@ Java_cn_net_zhijian_quickjs_QuickJSContext_dupValue(JNIEnv *env, jobject thiz, j
 }
 
 extern "C"
-JNIEXPORT void JNICALL
-Java_cn_net_zhijian_quickjs_QuickJSContext_freeDupValue(JNIEnv *env, jobject thiz, jlong context,
-                                                         jlong value) {
-    auto wrapper = reinterpret_cast<QuickJSWrapper*>(context);
-    wrapper->freeDupValue(value);
-}
-
-extern "C"
 JNIEXPORT jobject JNICALL
 Java_cn_net_zhijian_quickjs_QuickJSContext_parseJSON(JNIEnv *env, jobject thiz, jlong context,
                                                       jstring json) {
@@ -227,6 +248,28 @@ extern "C"
 JNIEXPORT jlong JNICALL
 Java_cn_net_zhijian_quickjs_QuickJSContext_createRuntime(JNIEnv *env, jclass clazz) {
     auto *rt = JS_NewRuntime();
+    if (rt == nullptr) {
+        return 0;
+    }
+
+    //quickjs-ng 默认给 JS 的栈预算就是 JS_DEFAULT_STACK_SIZE(1M)，而 JVM 每个线程的栈
+    //默认也只有 1M（Java 主线程同样被 -Xss 限制，ulimit 的 8M 用不上）。
+    //预算等于真实栈，递归到 600 层左右会先撞上栈的 guard page：整个进程 SIGSEGV，
+    //RangeError 根本来不及抛，Java 侧连 try/catch 都拦不住。
+    //这里按线程实际栈大小留出自上层帧和抛异常路径的余量，宁可早点抛错也不能崩进程。
+    size_t budget = JS_DEFAULT_STACK_SIZE;
+    size_t total = current_thread_stack_size();
+    if (total > 0) {
+        const size_t headroom = 192 * 1024;
+        size_t usable = total > headroom ? total - headroom : 0;
+        if (usable < budget) {
+            //下限 64K：再小栈的线程也得留几十层递归，否则直接不可用
+            budget = usable < 64 * 1024 ? 64 * 1024 : usable;
+        }
+    }
+    JS_SetMaxStackSize(rt, budget);
+    //栈顶要在设置预算之后再取一次，顺序反了 stack_limit 会按旧值算
+    JS_UpdateStackTop(rt);
     return reinterpret_cast<jlong>(rt);
 }
 
@@ -250,10 +293,21 @@ Java_cn_net_zhijian_quickjs_QuickJSContext_dumpMemoryUsage(JNIEnv *env, jclass c
         JS_DumpMemoryUsage(stdout, &stats, rt);
     } else {
         const char *path = env->GetStringUTFChars(file_name, JNI_FALSE);
+        errno = 0;
         auto file = fopen(path, "w");
+        int openErr = errno;
+        // fopen 失败是 IO 错误，不是空指针；抛项目统一的 QuickJSException 并带上文件名与
+        // 系统错误原因，避免误导成 NullPointerException。path 必须在 ReleaseStringUTFChars
+        // 之前拷进 std::string，否则指针已失效。
+        std::string openFailMsg;
+        if (!file) {
+            openFailMsg = std::string("Failed to open file '") + path
+                          + "' for writing: " + strerror(openErr);
+        }
         env->ReleaseStringUTFChars(file_name, path);
         if (!file) {
-            env->ThrowNew(env->FindClass("java/lang/NullPointerException"), "File cannot be null");
+            jclass exClass = env->FindClass("cn/net/zhijian/quickjs/QuickJSException");
+            env->ThrowNew(exClass, openFailMsg.c_str());
             return;
         }
 

@@ -97,6 +97,14 @@ public class QuickJSContext implements AutoCloseable {
     }
 
     public boolean isLiveObject(JSObject jsObj) {
+        //包装对象的计数已经归零，说明它自己那一次 JS_FreeValue 已经还过了：
+        //此时 pointer 有没有效完全取决于 JS 侧还留没留引用，从外部无从判断，
+        //而 native 的 JS_IsLiveObject 是直接读 p->free_mark 的（quickjs.c:7499），
+        //对象已被回收就是 heap-use-after-free（ASan 实测命中）。宁可返回 false 也不递野指针。
+        if (jsObj == null || !jsObj.isAlive()) {
+            return false;
+        }
+        checkDestroyed();
         return isLiveObject(runtime, jsObj.getPointer());
     }
     
@@ -107,12 +115,18 @@ public class QuickJSContext implements AutoCloseable {
 
         JSObject consoleObj = getGlobalObject().getJSObject("console");
         consoleObj.setProperty("stdout", args -> {
-            if (args.length != 2) {
-                return null;
+            String level = "log";
+            String info = "";
+            //native 侧 console.print 固定以 (level, msg) 调用 stdout，参数个数并不保证
+            if (args != null) {
+                if (args.length > 0 && args[0] != null) {
+                    level = String.valueOf(args[0]).toLowerCase();
+                }
+                if (args.length > 1 && args[1] != null) {
+                    Object msg = args[1];
+                    info = unquote(msg instanceof String ? (String) msg : String.valueOf(msg));
+                }
             }
-            String level = ((String) args[0]).toLowerCase();
-            String s = (String) args[1];
-            String info = s.substring(1, s.length() - 1);//前后多加了一个单引号
             switch (level) {
                 case "info":
                     console.info(info);
@@ -134,24 +148,44 @@ public class QuickJSContext implements AutoCloseable {
         consoleObj.release();
     }
 
+    /**
+     * format() 只给字符串参数包一对单引号，数字/布尔/对象不包，
+     * 所以只有两端确实都是单引号时才去掉，否则会吃掉内容的首尾字符。
+     */
+    private static String unquote(String msg) {
+        if (msg.length() > 1 && msg.charAt(0) == '\'' && msg.charAt(msg.length() - 1) == '\'') {
+            return msg.substring(1, msg.length() - 1);
+        }
+        return msg;
+    }
+
+    //下面这几个是 runtime 级入口。close() 里 destroyContext 会走到 JS_FreeRuntime，
+    //runtime 结构体当场被 free；这些方法早先不检查 destroyed，关完之后调用等于
+    //拿野指针去 JS_RunGC/JS_SetXxx —— ASan 实测 runGC 报 heap-use-after-free
+    //（写在被 JS_FreeRuntime 释放的 1496 字节块里），Release 版就是静默改堆。
     public void setMaxStackSize(int maxStackSize) {
+        checkDestroyed();
         setMaxStackSize(runtime, maxStackSize);
     }
 
     public void setGCThreshold(int thresholdSize) {
+        checkDestroyed();
         setGCThreshold(runtime, thresholdSize);
     }
 
     public void runGC() {
+        checkDestroyed();
         runGC(runtime);
     }
 
     public void setMemoryLimit(int memoryLimitSize) {
+        checkDestroyed();
         setMemoryLimit(runtime, memoryLimitSize);
     }
 
     // Return the byte size.
     public long getMemoryUsedSize() {
+        checkDestroyed();
         return getMemoryUsedSize(runtime);
     }
 
@@ -180,6 +214,8 @@ public class QuickJSContext implements AutoCloseable {
     private final long currentThreadId;
     private boolean destroyed = false;
     private final HashMap<Integer, JSCallFunction> callFunctionMap = new HashMap<>();
+    //注册在 map 里的标识由这里单调分配，map 只在引擎线程读写，不需要并发容器
+    private int nextCallFunctionId = 1;
 
     private ModuleLoader moduleLoader;
     private JSObject globalObject;
@@ -189,6 +225,7 @@ public class QuickJSContext implements AutoCloseable {
     private LeakDetectionListener leakDetectionListener;
     private boolean enableStackTrace = false;
 
+    @SuppressWarnings("deprecation")
     private QuickJSContext(JSObjectCreator creator) {
         try {
             // 这里代理一层 creator，用来记录 js 对象.
@@ -225,18 +262,24 @@ public class QuickJSContext implements AutoCloseable {
             };
             runtime = createRuntime();
             context = createContext(runtime);
+            //createContext 在 native 侧分配失败时会返回 0，后续任何 JNI 调用都会拿 0 当 wrapper 指针解引用，
+            //直接 JVM 段错误而不是异常，所以这里必须当场拦住
+            if (context == 0) {
+                throw new QuickJSException("Failed to create QuickJS context, out of memory");
+            }
         } catch (UnsatisfiedLinkError e) {
             throw new QuickJSException("The so library must be initialized before createContext! QuickJSLoader.init should be called on the Android platform. In the JVM, you need to manually call System.loadLibrary");
         }
-        currentThreadId = Thread.currentThread().threadId();
+        currentThreadId = Thread.currentThread().getId(); //threadId() 是 JDK 19 才有的方法，本模块声明兼容 11
     }
 
     public void setEnableStackTrace(boolean enableStackTrace) {
         this.enableStackTrace = enableStackTrace;
     }
     
+    @SuppressWarnings("deprecation")
     private void checkSameThread() {
-        if (currentThreadId != Thread.currentThread().threadId()) {
+        if (currentThreadId != Thread.currentThread().getId()) {
             throw new QuickJSException("Must be called in the same thread");
         }
     }
@@ -284,7 +327,9 @@ public class QuickJSContext implements AutoCloseable {
         checkSameThread();
         checkDestroyed();
 
-        if (globalObject == null) {
+        if (globalObject == null || globalObject.isRefCountZero()) {
+            //调用方 release() 过缓存包装之后不能把死壳继续发出去：包装现在确实持有
+            //JS_GetGlobalObject 的那次引用，重新取一次才能让后续调用和计数都对
             globalObject = getGlobalObject(context);
         }
 
@@ -312,7 +357,13 @@ public class QuickJSContext implements AutoCloseable {
     }
 
     private void releaseObjectRecords(boolean needRelease) {
-        JSFunction format = getGlobalObject().getJSFunction("format");
+        //这里任何一次抛出都会让 close() 走不到 destroyContext，整个 runtime 就地泄漏，两种真实触发方式：
+        //1) 调用方 release() 了 getGlobalObject() 返回的缓存包装，拿它再取 format 会抛"计数已为零"；
+        //2) 脚本把内置的 globalThis.format 覆盖成非函数，getJSFunction 返回 null，末尾 format.release() 就是 NPE。
+        if (globalObject == null || globalObject.isRefCountZero()) {
+            globalObject = getGlobalObject(context);
+        }
+        JSFunction format = ((JSObject) globalObject).getJSFunction("format");
 
         // 检测是否有未被释放引用的对象，如果有的话，根据计数释放一下
         Iterator<JSObject> objectIterator = objectRecords.iterator();
@@ -322,9 +373,9 @@ public class QuickJSContext implements AutoCloseable {
             // 这里需要过滤掉 getGlobalObject 和 format
             // 1. getGlobalObject 全局对象不会主动释放，引擎销毁会回收
             // 2. format 用来格式化内容，会在迭代完释放掉，这里过滤掉
-            if (!object.isRefCountZero() && object != getGlobalObject() && object != format) {
+            if (!object.isRefCountZero() && object != globalObject && object != format) {
                 int refCount = object.getRefCount();
-                if (leakDetectionListener != null) {
+                if (leakDetectionListener != null && format != null) {
                     String value = (String) format.call(object);
                     leakDetectionListener.notifyLeakDetected(object, value);
                 }
@@ -343,7 +394,16 @@ public class QuickJSContext implements AutoCloseable {
             }
         }
 
-        format.release();
+        if (format != null) {
+            format.release();
+        }
+
+        //全局对象包装现在真的持有 JS_GetGlobalObject 的那次引用，必须在 destroyContext 之前对称还掉，
+        //否则引擎带着非零计数被销毁，quickjs-ng 调试版直接停在 JS_FreeRuntime 的 gc_obj_list 断言上
+        if (globalObject != null && !globalObject.isRefCountZero()) {
+            globalObject.release();
+        }
+        globalObject = null;
     }
 
     public List<JSObject> getObjectRecords() {
@@ -366,17 +426,18 @@ public class QuickJSContext implements AutoCloseable {
         checkSameThread();
         checkDestroyed();
 
-        if (value instanceof JSCallFunction) {
-            // 优化：只传 callFunctionId 给到 JNI.
-            putCallFunction((JSCallFunction) value);
-        }
-
         setProperty(context, jsObj.getPointer(), name, value);
     }
 
-    private void putCallFunction(JSCallFunction callFunction) {
-        int callFunctionId = callFunction.hashCode();
+    /**
+     * 该方法只提供给 Native 层调用.
+     * 回调标识必须由引擎分配，不能用 hashCode：两个回调 hashCode 相同时后注册的会覆盖前一个，
+     * JS 侧调用先注册的那个就会静默跑到后注册的对象上。
+     */
+    public int registerCallback(JSCallFunction callFunction) {
+        int callFunctionId = nextCallFunctionId++;
         callFunctionMap.put(callFunctionId, callFunction);
+        return callFunctionId;
     }
 
     /**
@@ -398,9 +459,6 @@ public class QuickJSContext implements AutoCloseable {
 
         JSCallFunction callFunction = callFunctionMap.get(callFunctionId);
         Object ret = callFunction.call(args);
-        if (ret instanceof JSCallFunction) {
-            putCallFunction((JSCallFunction) ret);
-        }
 
         if (ret instanceof JSObject) {
             // 注意：JSObject 对象作为参数返回到️ JavaScript 中，不需要调用 release 方法，
@@ -477,20 +535,13 @@ public class QuickJSContext implements AutoCloseable {
         checkSameThread();
         checkDestroyed();
 
-        for (int i = 0; i < args.length; i++) {
-            Object arg = args[i];
-            if (arg instanceof JSCallFunction) {
-                putCallFunction((JSCallFunction) arg);
-            }
-        }
-
         return call(context, func.getPointer(), objPointer, thisPointerTag, args);
     }
 
     /**
-     * Automatically manage the release of objects，
-     * the hold method is equivalent to call the
-     * dupValue and freeDupValue methods with NativeCleaner.
+     * Automatically manage the release of objects: hold() is equivalent to calling
+     * dupValue() and registering a NativeCleaner that releases the extra reference
+     * when this wrapper is garbage-collected.
      */
     public void hold(JSObject jsObj) {
         checkSameThread();
@@ -606,11 +657,23 @@ public class QuickJSContext implements AutoCloseable {
         return evaluateModule(script, UNKNOWN_FILE);
     }
 
+    //throwJSException 用来把消息递给 JS 侧的全局临时变量，避免把消息拼进源码
+    private static final String THROW_VALUE = "__quickjsThrowMessage";
+
     public void throwJSException(String error) {
         // throw $error;
-        String errorScript = "throw " + "\"" + error + "\"" + ";";
         QuickJSLogger.instance().error(error);
-        evaluate(errorScript);
+        //不能拼成 throw "..."，消息里有引号/换行会变成 JS 语法错误，真实错误反而被吞掉
+        JSObject global = getGlobalObject();
+        global.setProperty(THROW_VALUE, error == null ? "" : error);
+        try {
+            evaluate("throw " + THROW_VALUE + ";");
+        } finally {
+            try {
+                evaluate("delete " + THROW_VALUE + ";");
+            } catch (Exception cleanupFailed) { //清理失败不能盖掉真正要抛出的 JS 异常
+            }
+        }
     }
 
     public Object getOwnPropertyNames(JSObject object) {
@@ -641,7 +704,6 @@ public class QuickJSContext implements AutoCloseable {
     private native void set(long context, long objValue, Object value, int index);
     private native void freeValue(long context, long objValue);
     private native void dupValue(long context, long objValue);
-    private native void freeDupValue(long context, long objValue);
     private native Object parseJSON(long context, String json);
     private native byte[] compile(long context, String sourceCode, String fileName, boolean isModule); // Bytecode compile
     private native Object execute(long context, byte[] bytecode); // Bytecode execute

@@ -299,6 +299,42 @@ public class JavaFeaturesTest extends UnitTestBase {
     }
     
     @Test
+    public void testManyDistinctCallbacksAllFired() {
+        QuickJSContext ctx = getContext();
+        final int n = 50;
+        StringBuilder fired = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            final int id = i;
+            ctx.getGlobalObject().setProperty("cb" + i, (JSCallFunction) args -> {
+                fired.append(id).append(',');
+                return id;
+            });
+        }
+        // 每个回调都应被正确调用且返回值正确、互不覆盖。
+        // 旧方案用 hashCode 作 map key 才有互相覆盖/删错条目的风险，现改为引擎自增 id。
+        for (int i = 0; i < n; i++) {
+            Object r = ctx.evaluate("cb" + i + "()");
+            assertEquals(i, ((Number) r).intValue());
+        }
+        for (int i = 0; i < n; i++) {
+            assertTrue(fired.indexOf(Integer.toString(i) + ",") >= 0, "callback cb" + i + " was not invoked");
+        }
+    }
+
+    @Test
+    public void testToStringDoesNotThrow() {
+        QuickJSContext ctx = getContext();
+        // G：QuickJSObject.toString 在 getJSFunction("toString") 不可用时不应 NPE，
+        // 普通对象/函数/数组的 toString 都应返回非 null 字符串。
+        Object obj = ctx.evaluate("({a:1, b:'x'})");
+        assertNotNull(obj.toString());
+        Object fn = ctx.evaluate("(function f(){ return 1; })");
+        assertNotNull(fn.toString());
+        Object arr = ctx.evaluate("[1,2,3]");
+        assertNotNull(arr.toString());
+    }
+    
+    @Test
     public void testParseJson() {
         Object o = getContext().parse("{\"a\":1,\"b\":\"abc\",\"c\":{\"a\":1.0,\"b\":189}}");
         assertTrue(o != null && o instanceof JSObject);

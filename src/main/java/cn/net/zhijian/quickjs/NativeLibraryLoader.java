@@ -31,14 +31,26 @@ class NativeLibraryLoader {
                 return;
             }
 
-            QuickJSLogger.instance().info("Load {} from jar", resourcePath);
+            QuickJSLogger.instance().debug("Load {} from jar", resourcePath);
             // 将库文件从 JAR 提取到临时目录
             Path tempFile = Files.createTempFile("libquickjs_", "_" + libName);
             Files.copy(in, tempFile, StandardCopyOption.REPLACE_EXISTING);
-            tempFile.toFile().deleteOnExit(); //退出时删除临时文件
+            // Windows 下 System.load 通过 LoadLibrary 锁定 DLL，进程退出前无法删除，
+            // 因此用 deleteOnExit 兜底，确保 JVM 退出时一定清理。
+            // 其它平台（Linux/Android）dlopen 后可直接 unlink 路径，立即删避免残留，
+            // 删除失败也无妨（仍由 deleteOnExit 兜底）。
+            tempFile.toFile().deleteOnExit();
 
             // 加载提取出来的动态库
             System.load(tempFile.toAbsolutePath().toString());
+
+            if (!"Windows".equals(osName())) {
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (IOException ignored) {
+                    // 仍由 deleteOnExit 兜底
+                }
+            }
         } catch (Exception e) {
             throw new QuickJSException("Failed to load native library from " + resourcePath, e);
         }
@@ -57,7 +69,8 @@ class NativeLibraryLoader {
     private static boolean isAndroid() {
         String s = System.getProperty("java.vendor");
         // 注意: "Android" 和 "Dalvik/ART" 的大小写准确
-        if(s.contains("Android")) {
+        //java.vendor 是可被覆盖/缺省的属性（精简 JRE、-Djava.vendor= 清空），为 null 时不能直接 contains
+        if(s != null && s.contains("Android")) {
             return true;
         }
         

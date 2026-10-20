@@ -18,7 +18,7 @@ eclipse {
     }
 }
 
-version = '0.2.2'
+version = '0.3.2'
 group = "cn.net.zhijian.quickjs"
 
 repositories {
@@ -29,6 +29,9 @@ repositories {
 
 tasks.withType(JavaCompile) {  
     options.encoding = "UTF-8"  
+    //用当前 JDK 的 class 文件版本之外的 API 时立刻报错，避免编出在高版本 JDK 编译通过、
+    //在声明的 11 上运行却 NoSuchMethodError 的产物（例如 Thread.threadId 是 JDK 19 才有的）
+    options.release = 11
 }
 
 tasks.withType(Javadoc) {  
@@ -70,5 +73,4 @@ test {
     }
     // Use JUnit Platform for unit tests.
     useJUnitPlatform()
-
 }

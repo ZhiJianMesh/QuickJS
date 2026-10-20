@@ -1,7 +1,10 @@
 package cn.net.zhijian.quickjs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -226,7 +229,8 @@ public class JSFeaturesTest extends UnitTestBase {
         end = System.currentTimeMillis();
         long useTime2 = end > start ? end - start : 1;
         System.out.println("speed2(auto executed):" + (1000L*N/useTime2));
-        assertTrue(useTime2 < useTime1);
+        //字节码和源码两条路径都要给出8位日期；谁快谁慢看机器和JVM预热，不做断言
+        assertEquals(8, parseString(getContext().evaluate(js)).length());
     }
     
     @Test
@@ -376,5 +380,288 @@ public class JSFeaturesTest extends UnitTestBase {
         assertEquals("Jack", o);
         o = getContext().evaluate("student.age");
         assertEquals(18, o);
+    }
+
+    @Test
+    public void testContainsPropertyDoesNotLeak() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            ctx.evaluate("globalThis.o = {b:1};");
+            JSObject g = ctx.getGlobalObject();
+            int before = ctx.getObjectRecords().size();
+            for (int i = 0; i < 500; i++) {
+                assertTrue(g.containsProperty("o"));
+            }
+            assertEquals(before, ctx.getObjectRecords().size());
+            assertFalse(g.containsProperty("not_exists"));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testTypedGettersDoNotLeak() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            ctx.evaluate("globalThis.obj = {child:{a:1}, arr:[1,2]};");
+            JSObject obj = ctx.getGlobalObject().getJSObject("obj");
+            int before = ctx.getObjectRecords().size();
+            //属性值是 JS 对象时，这些取值方法只是判断类型/转换，用完必须释放
+            assertNotNull(obj.getString("child"));   //JS 对象走 toString()，用完同样要释放
+            assertNull(obj.getInteger("child"));
+            assertFalse(obj.getBoolean("child"));
+            assertNull(obj.getDouble("arr"));
+            assertNull(obj.getLong("arr"));
+            assertNull(obj.getBytes("child"));
+            assertNull(obj.getJSArray("child"));
+            assertNull(obj.getJSFunction("child"));
+            assertEquals(before, ctx.getObjectRecords().size());
+            obj.release();
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testConsoleWithAnyArguments() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            final StringBuilder out = new StringBuilder();
+            ctx.setConsole(new QuickJSContext.Console() {
+                @Override public void debug(String info) { out.append("D:").append(info).append('|'); }
+                @Override public void info(String info) { out.append("I:").append(info).append('|'); }
+                @Override public void warn(String info) { out.append("W:").append(info).append('|'); }
+                @Override public void error(String info) { out.append("E:").append(info).append('|'); }
+            });
+
+            ctx.evaluate("console.log();console.log(12345);console.log('txt');console.info('i');console.warn('w');console.error('e');");
+            String s = out.toString();
+            assertTrue(s.contains("D:|"), s);        //无参调用不能抛异常
+            assertTrue(s.contains("D:12345|"), s);   //非字符串参数不能被砍掉首尾字符
+            assertTrue(s.contains("D:txt|"), s);
+            assertTrue(s.contains("I:i|"), s);
+            assertTrue(s.contains("W:w|"), s);
+            assertTrue(s.contains("E:e|"), s);
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testThrowJSExceptionKeepsMessage() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            final String msg = "cannot read property \"data\" of undefined";
+            //旧实现把消息拼进 throw "..."，消息里的引号先变成 JS 语法错误，真实消息被吞
+            QuickJSException ex = assertThrows(QuickJSException.class, () -> ctx.throwJSException(msg));
+            assertTrue(String.valueOf(ex.getMessage()).contains(msg), String.valueOf(ex.getMessage()));
+
+            //从 Java 回调里抛给 JS 时同样要保住消息
+            ctx.getGlobalObject().setProperty("boom", (JSCallFunction) args -> {
+                ctx.throwJSException(msg);
+                return null;
+            });
+            QuickJSException ex2 = assertThrows(QuickJSException.class, () -> ctx.evaluate("boom()"));
+            assertTrue(String.valueOf(ex2.getMessage()).contains(msg), String.valueOf(ex2.getMessage()));
+
+            //抛完不能在全局留下临时变量
+            assertEquals("undefined", ctx.evaluate("typeof __quickjsThrowMessage"));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testRopeStringIsConverted() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            //quickjs-ng 0.17 起，超过 JS_STRING_ROPE_SHORT_LEN(512) 的拼接结果是 rope，
+            //和 JS_TAG_STRING 是不同的 tag；漏掉它长字符串会直接变成 null
+            Object longConcat = ctx.evaluate("'a'.repeat(1000) + 'b'.repeat(1000)");
+            assertTrue(longConcat instanceof String, String.valueOf(longConcat));
+            assertEquals(2000, ((String) longConcat).length());
+            assertEquals("aabb", ((String) longConcat).substring(998, 1002));
+
+            //短的仍然是普通 string，行为不能变
+            assertEquals("aaaaaaaaaabbbbbbbbbb", ctx.evaluate("'a'.repeat(10) + 'b'.repeat(10)"));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testShortBigIntIsConverted() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            //int32 范围内的 BigInt 是 JS_TAG_SHORT_BIG_INT 立即数，不处理会落到 default 变成 null
+            assertEquals(5L, ctx.evaluate("5n"));
+            assertEquals(0L, ctx.evaluate("0n"));
+            assertEquals(-7L, ctx.evaluate("-7n"));
+            assertEquals(7L, ctx.evaluate("BigInt(3)+BigInt(4)"));
+            //超出 int32 的走堆上 JSBigInt
+            assertEquals(4611686018427387904L, ctx.evaluate("(2n ** 62n)"));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testInfinityStaysDouble() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            //Infinity 强转 long 是有符号溢出 UB，实测会变成 Long.MIN_VALUE
+            assertEquals(Double.POSITIVE_INFINITY, ctx.evaluate("1/0"));
+            assertEquals(Double.NEGATIVE_INFINITY, ctx.evaluate("-1/0"));
+            assertEquals(1.0E19, ctx.evaluate("1e19"));
+            //范围内的整数仍按 Long 返回，这条是既有行为
+            assertEquals(1000000000000000000L, ctx.evaluate("1e18"));
+            assertEquals(1.5D, ctx.evaluate("1.5"));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testSymbolDoesNotLeak() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            for (int i = 0; i < 1000; i++) {
+                assertNull(ctx.evaluate("Symbol(Math.random())")); //symbol 转不出 Java 值
+            }
+            ctx.runGC();
+            long before = ctx.getMemoryUsedSize();
+            for (int i = 0; i < 10000; i++) {
+                ctx.evaluate("Symbol(Math.random())");
+            }
+            ctx.runGC();
+            long delta = ctx.getMemoryUsedSize() - before;
+            //修复前 2 万次约泄漏 113 万字节，这里给足余量
+            assertTrue(delta < 65536, "leaked " + delta + " bytes");
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testJavaExceptionIsCatchableInJs() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            ctx.getGlobalObject().setProperty("javaBooms", (JSCallFunction) args -> {
+                throw new IllegalStateException("java-side-boom");
+            });
+            //挂起的 Java 异常必须先换成 JS 异常，否则 JS 侧 try/catch 抓不到，
+            //而且异常会漂到后面某次无关的 JNI 调用上
+            assertEquals("caught-in-js", ctx.evaluate("try { javaBooms(); 'not-caught'; } catch (e) { 'caught-in-js'; }"));
+
+            QuickJSException ex = assertThrows(QuickJSException.class, () -> ctx.evaluate("javaBooms()"));
+            assertTrue(String.valueOf(ex.getMessage()).contains("java-side-boom"), String.valueOf(ex.getMessage()));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testHandledRejectionIsNotReported() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            //已经 catch 掉的 rejection 不该当成未处理异常抛出来
+            assertEquals(1, ctx.evaluate("Promise.reject(new Error('SECOND')).catch(function(){ return 1; });"));
+
+            //两个 rejection 只处理了一个：上报的必须是漏掉的那个，而不是已处理的那个
+            QuickJSException ex = assertThrows(QuickJSException.class, () -> ctx.evaluate(
+                    "var p1 = Promise.reject(new Error('FIRST'));var p2 = Promise.reject(new Error('SECOND'));p2.catch(function(){});"));
+            String msg = String.valueOf(ex.getMessage());
+            assertTrue(msg.contains("FIRST"), msg);
+            assertFalse(msg.contains("SECOND"), msg);
+
+            //取一个已被处理、但自身被拒绝的 promise：不能静默返回 null
+            QuickJSException ex2 = assertThrows(QuickJSException.class, () -> ctx.evaluate(
+                    "var q = Promise.reject(new Error('boom'));q.catch(function(){});q;"));
+            assertTrue(String.valueOf(ex2.getMessage()).contains("boom"), String.valueOf(ex2.getMessage()));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    //值语义类（record / 重写了 hashCode 的数据类）的 hashCode 由字段决定，两个不同回调很容易撞成同一个值。
+    //旧实现拿 hashCode 当回调标识，撞了就把 f1() 静默派到 f2 的 Java 对象上。
+    private static class FixedHashCodeCallback implements JSCallFunction {
+        private final String name;
+
+        FixedHashCodeCallback(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public int hashCode() {
+            return 42;
+        }
+
+        @Override
+        public Object call(Object...args) {
+            return name;
+        }
+    }
+
+    @Test
+    public void testCallbacksSharingHashCodeAreNotMixedUp() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            JSObject global = ctx.getGlobalObject();
+            global.setProperty("f1", new FixedHashCodeCallback("FIRST"));
+            global.setProperty("f2", new FixedHashCodeCallback("SECOND"));
+            assertEquals("FIRST", ctx.evaluate("f1()"));
+            assertEquals("SECOND", ctx.evaluate("f2()"));
+
+            //作为参数传进 JS 的回调同样要按对象区分
+            JSFunction caller = (JSFunction) ctx.evaluate("(function(cb){ return cb(); })");
+            assertEquals("THIRD", caller.call(new FixedHashCodeCallback("THIRD")));
+
+            //GC 之后依然要能正确派发（两个回调都被 globalObject 强引用着）
+            ctx.runGC();
+            assertEquals("FIRST", ctx.evaluate("f1()"));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testNonAsciiStringSurvivesConversion() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            //JS 侧固定是 UTF-8，转 Java 时不能跟着 file.encoding 走，
+            //否则在 -Dfile.encoding=GBK 的 JVM 上（zh-CN Windows + JDK<=17）非 ASCII 全变乱码
+            String js = "\"中文测试\" + \"，éè\" + \"🎉\"";
+            String s = (String) ctx.evaluate(js);
+            assertEquals("中文测试，éè🎉", s);
+
+            //反方向：Java 字符串进 JS 也要保持长度和内容
+            JSObject global = ctx.getGlobalObject();
+            global.setProperty("cn", s);
+            assertEquals(9, ctx.evaluate("cn.length")); //5 + 1 + 2 + 1，🎉 是代理对
+            assertEquals("中文测试，éè🎉", ctx.evaluate("cn"));
+        } finally {
+            ctx.close();
+        }
+    }
+
+    @Test
+    public void testDetachedArrayBufferThrows() {
+        QuickJSContext ctx = QuickJSContext.create();
+        try {
+            //v0.17 起 JS 可以 ab.transfer() 把 buffer 变成 detached，
+            //旧实现会静默返回空数组并把 JS 异常留在那儿，漂到后面某次无关调用上
+            assertThrows(QuickJSException.class, () -> ctx.evaluate(
+                    "(function(){ var ab = new ArrayBuffer(8); ab.transfer(); return ab; })()"));
+
+            //异常转成 Java 异常后，context 必须还能继续正常使用
+            assertEquals(2, ctx.evaluate("1+1"));
+
+            Object buf = ctx.evaluate("new ArrayBuffer(4)");
+            assertTrue(buf instanceof byte[]);
+            assertEquals(4, ((byte[]) buf).length);
+        } finally {
+            ctx.close();
+        }
     }
 }

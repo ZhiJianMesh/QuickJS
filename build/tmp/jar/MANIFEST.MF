@@ -1,0 +1,8 @@
+Manifest-Version: 0.3.2
+Built-By: lgy
+Build-Timestamp: 2026-10-20T14:07:40.747+0800
+Build-Revision: 0.3.2
+Created-By: Gradle 8.14.3
+Build-Jdk: 21.0.2 (Oracle Corporation 21.0.2+13-58)
+Build-OS: Windows 11 amd64 10.0
+

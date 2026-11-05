@@ -101,6 +101,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Android")
     target_link_options(quickjs-jni-wrapper PRIVATE -Wl,--as-needed -Wl,--gc-sections -Wl,-s -rtlib=compiler-rt)
 else()
     target_link_libraries(quickjs-jni-wrapper PRIVATE quickjs m dl)
+    set_target_properties(quickjs-jni-wrapper PROPERTIES 
+        LINK_FLAGS "-static-libgcc -static-libstdc++"
+    )
 endif()
 
 # 允许 C++ 编译器中 void* → uint8_t* 的隐式转换（与 C 行为一致）
